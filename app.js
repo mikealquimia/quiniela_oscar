@@ -322,7 +322,7 @@ function populateCmpDates() {
   if (!sel) return;
   const today = getTodayGuatemala();
   const dates = [...new Set(
-    state.matches.map(m => m.datetime ? m.datetime.slice(0,10) : null).filter(Boolean)
+    state.matches.map(m => m.datetime ? dateInGT(m.datetime) : null).filter(Boolean)
   )].sort();
   const current = sel.value;
   sel.innerHTML = '<option value="all">Todos los partidos</option>';
@@ -466,6 +466,11 @@ function renderMyStats() {
 // Zona horaria fija de Guatemala (UTC-6, sin horario de verano)
 const GT_TZ = 'America/Guatemala';
 
+// Retorna la fecha "YYYY-MM-DD" de un datetime en zona horaria de Guatemala
+function dateInGT(datetime) {
+  return new Date(datetime).toLocaleDateString('en-CA', { timeZone: GT_TZ }); // en-CA da formato YYYY-MM-DD
+}
+
 // Formatea solo la hora en zona horaria de Guatemala
 function fmtTime(datetime) {
   return new Date(datetime).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', timeZone: GT_TZ });
@@ -497,7 +502,7 @@ function populateDateFilter() {
   const today = getTodayGuatemala();
   // Get unique dates
   const dates = [...new Set(
-    state.matches.map(m => m.datetime ? m.datetime.slice(0,10) : null).filter(Boolean)
+    state.matches.map(m => m.datetime ? dateInGT(m.datetime) : null).filter(Boolean)
   )].sort();
   sel.innerHTML = '<option value="all">Todos los partidos</option>';
   dates.forEach(d => {
@@ -552,7 +557,7 @@ function renderMatches() {
 
   let filteredMatches = [...state.matches];
   if (dateFilter !== 'all') {
-    filteredMatches = filteredMatches.filter(m => m.datetime && m.datetime.slice(0,10) === dateFilter);
+    filteredMatches = filteredMatches.filter(m => m.datetime && dateInGT(m.datetime) === dateFilter);
   }
 
   if (filteredMatches.length === 0) {
@@ -763,7 +768,7 @@ function renderAdminMatches() {
   if (adminSel) {
     const currentVal = adminSel.value;
     const dates = [...new Set(
-      state.matches.map(m => m.datetime ? m.datetime.slice(0,10) : null).filter(Boolean)
+      state.matches.map(m => m.datetime ? dateInGT(m.datetime) : null).filter(Boolean)
     )].sort();
     adminSel.innerHTML = '<option value="all">Todas las fechas</option>';
     dates.forEach(d => {
@@ -779,7 +784,7 @@ function renderAdminMatches() {
   const adminDateFilter = document.getElementById('admin-date-filter')?.value || 'all';
   let matches = adminDateFilter === 'all'
     ? state.matches
-    : state.matches.filter(m => m.datetime && m.datetime.slice(0,10) === adminDateFilter);
+    : state.matches.filter(m => m.datetime && dateInGT(m.datetime) === adminDateFilter);
 
   if (matches.length === 0) {
     container.innerHTML = '<p style="font-size:13px;color:var(--text-secondary)">No hay partidos para esta fecha.</p>';
@@ -1099,7 +1104,7 @@ function renderComparar() {
   populateCmpDates();
   const dayFilter = document.getElementById('cmp-date-filter')?.value || 'all';
   let matches = [...state.matches].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  if (dayFilter !== 'all') matches = matches.filter(m => m.datetime && m.datetime.slice(0, 10) === dayFilter);
+  if (dayFilter !== 'all') matches = matches.filter(m => m.datetime && dateInGT(m.datetime) === dayFilter);
 
   if (matches.length === 0) {
     listEl.innerHTML = '<div class="cmp-empty">No hay partidos para este día. Usa ‹ › para ver otro día.</div>';
