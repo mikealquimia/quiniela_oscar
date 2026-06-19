@@ -994,9 +994,12 @@ async function importFixtures() {
       const tzStr   = timeParts[1] || 'UTC-6'; // "UTC-6" o "UTC-4"
       const tzMatch = tzStr.match(/UTC([+-]\d+)/);
       const tzOffset = tzMatch ? parseInt(tzMatch[1]) : -6; // negativo = atrás de UTC
-      // Convertir a UTC: restar el offset (UTC-6 → sumar 6h)
-      const localMs  = new Date(m.date + 'T' + timeStr + ':00').getTime();
-      const utcMs    = localMs - tzOffset * 60 * 60 * 1000;
+      // Convertir a UTC: parsear como UTC explícito para evitar que el navegador
+      // interprete la fecha en su propia zona horaria local
+      const [th, tm] = timeStr.split(':').map(Number);
+      const [dy, dmo, dd] = m.date.split('-').map(Number);
+      // Crear fecha en UTC y luego restar el offset de la zona horaria del partido
+      const utcMs = Date.UTC(dy, dmo - 1, dd, th, tm, 0) - tzOffset * 60 * 60 * 1000;
       const utcDate  = new Date(utcMs);
       const pad = n => String(n).padStart(2,'0');
       const datetime = utcDate.getUTCFullYear() + '-'
@@ -1247,8 +1250,9 @@ async function verifySchedule() {
       const tzStr   = timeParts[1] || 'UTC-6';
       const tzMatch = tzStr.match(/UTC([+-]\d+)/);
       const tzOffset = tzMatch ? parseInt(tzMatch[1]) : -6;
-      const localMs = new Date(m.date + 'T' + timeStr + ':00').getTime();
-      const utcMs   = localMs - tzOffset * 60 * 60 * 1000;
+      const [th, tm] = timeStr.split(':').map(Number);
+      const [dy, dmo, dd] = m.date.split('-').map(Number);
+      const utcMs = Date.UTC(dy, dmo - 1, dd, th, tm, 0) - tzOffset * 60 * 60 * 1000;
       const utcDate = new Date(utcMs);
       const pad = n => String(n).padStart(2,'0');
       const utcISO = utcDate.getUTCFullYear() + '-'
