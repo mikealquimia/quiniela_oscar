@@ -1036,50 +1036,50 @@ async function importFixtures() {
   }
 }
 
-// ─── Actualizar resultados desde API-Football ────────────────────────────────
+// ─── Actualizar resultados desde openfootball (sin API key) ──────────────────
 async function syncResults() {
-  if (!API_FOOTBALL_KEY) {
-    alert('Agrega tu API key de API-Football en app.js primero.\nRegistrate gratis en: https://dashboard.api-football.com/register');
-    return;
-  }
   const btn = document.getElementById('btn-sync');
   btn.textContent = 'Actualizando...';
   btn.disabled = true;
   try {
-    const res = await fetch('https://v3.football.api-sports.io/fixtures?league=1&season=2026&status=FT', {
-      headers: {
-        'x-rapidapi-key': API_FOOTBALL_KEY,
-        'x-rapidapi-host': 'v3.football.api-sports.io'
-      }
-    });
+    const res = await fetch('https://raw.githubusercontent.com/openfootball/worldcup.json/master/2026/worldcup.json');
+    if (!res.ok) throw new Error('No se pudo conectar con openfootball');
     const data = await res.json();
-    if (!data.response) throw new Error('Respuesta inválida de API-Football');
+    const matches = data.matches || [];
+
+    // Construir mapa de resultados: "Home|Away" → { home, away }
+    const scoreMap = {};
+    matches.forEach(m => {
+      if (!m.team1 || !m.team2) return;
+      if (!m.score || !m.score.ft) return;
+      const ft = m.score.ft;
+      const scoreHome = String(ft[0] ?? '');
+      const scoreAway = String(ft[1] ?? '');
+      if (scoreHome === '' || scoreAway === '') return;
+      scoreMap[m.team1 + '|' + m.team2] = { home: scoreHome, away: scoreAway };
+    });
 
     let updated = 0;
-    data.response.forEach(fixture => {
-      const home = fixture.teams.home.name;
-      const away = fixture.teams.away.name;
-      const scoreHome = String(fixture.goals.home ?? '');
-      const scoreAway = String(fixture.goals.away ?? '');
-      if (scoreHome === '' || scoreAway === '') return;
-
-      // Match by team names (fuzzy - find closest)
-      const match = state.matches.find(m =>
-        m.home.toLowerCase().includes(home.toLowerCase().slice(0,5)) ||
-        home.toLowerCase().includes(m.home.toLowerCase().slice(0,5))
-      );
-      if (match && (match.result.home !== scoreHome || match.result.away !== scoreAway)) {
-        match.result = { home: scoreHome, away: scoreAway };
+    state.matches.forEach(match => {
+      const key = match.home + '|' + match.away;
+      const score = scoreMap[key];
+      if (!score) return;
+      if (match.result.home !== score.home || match.result.away !== score.away) {
+        match.result = { home: score.home, away: score.away };
         updated++;
       }
     });
 
     await saveState();
-    btn.textContent = '✓ ' + updated + ' resultados actualizados';
-    renderAdminMatches();
-    renderTabla();
-    renderStats();
-    renderMatches();
+    if (updated > 0) {
+      btn.textContent = '✓ ' + updated + ' resultados actualizados';
+      renderAdminMatches();
+      renderTabla();
+      renderStats();
+      renderMatches();
+    } else {
+      btn.textContent = '✓ Todo al día, sin cambios';
+    }
     setTimeout(() => { btn.textContent = 'Actualizar resultados'; btn.disabled = false; }, 3000);
   } catch(e) {
     btn.textContent = 'Error: ' + e.message;
