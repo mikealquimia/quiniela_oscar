@@ -463,6 +463,24 @@ function renderMyStats() {
 
 // ─── Date filter helpers ──────────────────────────────────────────────────────
 
+// Zona horaria fija de Guatemala (UTC-6, sin horario de verano)
+const GT_TZ = 'America/Guatemala';
+
+// Formatea solo la hora en zona horaria de Guatemala
+function fmtTime(datetime) {
+  return new Date(datetime).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', timeZone: GT_TZ });
+}
+
+// Formatea fecha corta en zona horaria de Guatemala (ej: "12 jun")
+function fmtDateShort(datetime) {
+  return new Date(datetime).toLocaleDateString('es', { day: 'numeric', month: 'short', timeZone: GT_TZ });
+}
+
+// Formatea fecha larga en zona horaria de Guatemala (ej: "viernes, 12 de junio")
+function fmtDateLong(datetime, options = {}) {
+  return new Date(datetime).toLocaleDateString('es', { timeZone: GT_TZ, ...options });
+}
+
 // Retorna la fecha de hoy en zona horaria de Guatemala (UTC-6) como "YYYY-MM-DD"
 function getTodayGuatemala() {
   const now = new Date();
@@ -483,8 +501,8 @@ function populateDateFilter() {
   )].sort();
   sel.innerHTML = '<option value="all">Todos los partidos</option>';
   dates.forEach(d => {
-    const dt = new Date(d + 'T12:00:00');
-    const label = dt.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
+    const dt = new Date(d + 'T12:00:00Z');
+    const label = fmtDateLong(dt, { weekday: 'long', day: 'numeric', month: 'long' });
     const o = document.createElement('option');
     o.value = d;
     o.textContent = (d === today ? '📅 Hoy — ' : '') + label.charAt(0).toUpperCase() + label.slice(1);
@@ -499,8 +517,8 @@ function populateDateFilter() {
 }
 
 function formatDayLabel(d) {
-  const dt = new Date(d + 'T12:00:00');
-  const s = dt.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long' });
+  const dt = new Date(d + 'T12:00:00Z');
+  const s = fmtDateLong(dt, { weekday: 'long', day: 'numeric', month: 'long' });
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 // Mueve la selección entre días disponibles (‹ ›) en Mi quiniela
@@ -573,7 +591,7 @@ function renderMatches() {
           statusBadge = `<span class="badge badge-gray">+0</span>`;
       }
 
-      const timeStr = new Date(m.datetime).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+      const timeStr = fmtTime(m.datetime);
 
       const center = locked || resultKnown
         ? `<div class="mq-final">${pickSet(pick) ? `${np.home}<span>–</span>${np.away}` : `<span style="opacity:.5">– –</span>`}</div>`
@@ -749,8 +767,8 @@ function renderAdminMatches() {
     )].sort();
     adminSel.innerHTML = '<option value="all">Todas las fechas</option>';
     dates.forEach(d => {
-      const dt = new Date(d + 'T12:00:00');
-      const label = dt.toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short' });
+      const dt = new Date(d + 'T12:00:00Z');
+      const label = fmtDateLong(dt, { weekday: 'short', day: 'numeric', month: 'short' });
       const o = document.createElement('option');
       o.value = d; o.textContent = label;
       adminSel.appendChild(o);
@@ -769,9 +787,7 @@ function renderAdminMatches() {
   }
 
   container.innerHTML = matches.map(m => {
-    const dt = new Date(m.datetime);
-    const dtStr = dt.toLocaleDateString('es', { day: 'numeric', month: 'short' })
-      + ' ' + dt.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+    const dtStr = fmtDateShort(m.datetime) + ' ' + fmtTime(m.datetime);
     const hasResult = m.result && m.result.home !== '';
 
     return `<div class="admin-match-row">
@@ -1179,14 +1195,12 @@ function cmpCard(m) {
         + '</div>';
     }).join('');
 
-  const dt = new Date(m.datetime);
   const center = hasResult
     ? '<span class="cmp-score">' + m.result.home + ' - ' + m.result.away + '</span>'
     : '<span class="cmp-vs">vs</span>';
   const subline = hasResult
     ? 'Resultado final'
-    : dt.toLocaleDateString('es', { day: 'numeric', month: 'short' }) + ' · '
-      + dt.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit' });
+    : fmtDateShort(m.datetime) + ' · ' + fmtTime(m.datetime);
 
   return '<div class="cmp-card" id="cmpc-' + m.id + '">'
     + '<div class="cmp-fixture">'
