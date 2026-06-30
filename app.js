@@ -368,6 +368,15 @@ function isLocked(match) {
   return Date.now() >= new Date(match.datetime).getTime() - 60 * 60 * 1000;
 }
 
+// Ganador por penales en un empate: 'H' | 'A' | null
+function penWinner(result) {
+  if (!result || result.penHome == null || result.penAway == null) return null;
+  if (result.penHome === '' || result.penAway === '') return null;
+  const ph = parseInt(result.penHome), pa = parseInt(result.penAway);
+  if (isNaN(ph) || isNaN(pa) || ph === pa) return null;
+  return ph > pa ? 'H' : 'A';
+}
+
 function calcPoints(userId, match) {
   if (!match.result || match.result.home === '') return 0;
   const pick = state.picks[userId]?.[match.id];
@@ -380,9 +389,16 @@ function calcPoints(userId, match) {
   if (ph === rh && pa === ra) return state.points.exact;
 
   // Ganador correcto: 2 pts base
-  const rRes = rh > ra ? 'H' : rh < ra ? 'A' : 'D';
+  // Con penales: quien predijo empate (marcador real) O al ganador de penales, ambos cobran.
+  const pen  = penWinner(match.result);
   const pRes = ph > pa ? 'H' : ph < pa ? 'A' : 'D';
-  let pts = rRes === pRes ? state.points.result : 0;
+  let pts = 0;
+  if (pen) {
+    if (pRes === 'D' || pRes === pen) pts = state.points.result;
+  } else {
+    const rRes = rh > ra ? 'H' : rh < ra ? 'A' : 'D';
+    if (pRes === rRes) pts = state.points.result;
+  }
 
   // Bonos (solo aplican cuando NO se acertó el marcador exacto)
   // +1 si acertaste la diferencia de goles
@@ -796,6 +812,8 @@ function renderAdminMatches() {
   container.innerHTML = matches.map(m => {
     const dtStr = fmtDateShort(m.datetime) + ' ' + fmtTime(m.datetime);
     const hasResult = m.result && m.result.home !== '';
+    const isDraw = hasResult && parseInt(m.result.home) === parseInt(m.result.away);
+    const hasPen = isDraw && (m.result.penHome != null && m.result.penHome !== '');
 
     return `<div class="admin-match-row">
       <span style="font-size:13px;flex:1;min-width:160px">
@@ -803,10 +821,18 @@ function renderAdminMatches() {
         <span style="color:var(--text-secondary);font-size:11px">${dtStr} · ${m.phase}</span>
       </span>
       <input type="number" min="0" max="20" placeholder="L" value="${hasResult ? m.result.home : ''}"
-        id="res-h-${m.id}" class="score-input">
+        id="res-h-${m.id}" class="score-input" oninput="togglePenBlock('${m.id}')">
       <span class="score-sep">–</span>
       <input type="number" min="0" max="20" placeholder="V" value="${hasResult ? m.result.away : ''}"
-        id="res-a-${m.id}" class="score-input">
+        id="res-a-${m.id}" class="score-input" oninput="togglePenBlock('${m.id}')">
+      <div class="pen-block${isDraw ? '' : ' hidden'}" id="pen-block-${m.id}">
+        <span class="pen-label">Pen</span>
+        <input type="number" min="0" max="20" placeholder="L" value="${hasPen ? m.result.penHome : ''}"
+          id="pen-h-${m.id}" class="pen-input">
+        <span class="score-sep">–</span>
+        <input type="number" min="0" max="20" placeholder="V" value="${hasPen ? m.result.penAway : ''}"
+          id="pen-a-${m.id}" class="pen-input">
+      </div>
       <button class="btn btn-sm btn-primary" onclick="saveResult('${m.id}')">
         <i class="ti ti-check"></i> Guardar
       </button>
@@ -825,8 +851,21 @@ async function saveResult(matchId) {
   const a = document.getElementById('res-a-' + matchId).value;
   const m = state.matches.find(x => x.id === matchId);
   if (!m) return;
-  m.result = { home: h, away: a };
+  const isDraw = h !== '' && a !== '' && parseInt(h) === parseInt(a);
+  const penH = isDraw ? (document.getElementById('pen-h-' + matchId)?.value ?? '') : '';
+  const penA = isDraw ? (document.getElementById('pen-a-' + matchId)?.value ?? '') : '';
+  m.result = { home: h, away: a, penHome: penH, penAway: penA };
   await saveState();
+}
+
+// Muestra u oculta el bloque de penales según si el marcador es empate
+function togglePenBlock(matchId) {
+  const h = document.getElementById('res-h-' + matchId)?.value;
+  const a = document.getElementById('res-a-' + matchId)?.value;
+  const block = document.getElementById('pen-block-' + matchId);
+  if (!block) return;
+  const isDraw = h !== '' && a !== '' && parseInt(h) === parseInt(a);
+  block.classList.toggle('hidden', !isDraw);
 }
 
 let _deleteMatchId = null;
@@ -1042,7 +1081,12 @@ async function syncAll() {
       const datetime = toUTC(of.date, of.time);
       const phase    = roundToPhase(of.round, of.group);
       const result   = of.score?.ft
-        ? { home: String(of.score.ft[0]), away: String(of.score.ft[1]) }
+        ? {
+            home:    String(of.score.ft[0]),
+            away:    String(of.score.ft[1]),
+            penHome: of.score.p ? String(of.score.p[0]) : '',
+            penAway: of.score.p ? String(of.score.p[1]) : '',
+          }
         : null;
       const goals1 = (of.goals1 || []).map(g => ({ name: g.name, minute: g.minute }));
       const goals2 = (of.goals2 || []).map(g => ({ name: g.name, minute: g.minute }));
@@ -1052,7 +1096,21 @@ async function syncAll() {
         if (existing.datetime !== datetime) { existing.datetime = datetime; timeFixed++; }
         if (existing.phase !== phase)       { existing.phase = phase;       phaseFixed++; }
         if (result && (existing.result?.home !== result.home || existing.result?.away !== result.away)) {
-          existing.result = result; resultsFixed++;
+          // Preservar penales manuales si openfootball aún no los publica
+          existing.result = {
+            home:    result.home,
+            away:    result.away,
+            penHome: result.penHome !== '' ? result.penHome : (existing.result?.penHome ?? ''),
+            penAway: result.penAway !== '' ? result.penAway : (existing.result?.penAway ?? ''),
+          };
+          resultsFixed++;
+        } else if (result && of.score?.p) {
+          // Marcador ya coincidía pero pueden llegar penales nuevos
+          if (!existing.result?.penHome) {
+            existing.result.penHome = result.penHome;
+            existing.result.penAway = result.penAway;
+            resultsFixed++;
+          }
         }
         if (result) { existing.goals1 = goals1; existing.goals2 = goals2; }
       } else {
@@ -1205,8 +1263,12 @@ function cmpCard(m) {
         + '</div>';
     }).join('');
 
+  const pen = penWinner(m.result);
+  const penStr = pen && hasResult
+    ? ' <span style="font-size:11px;font-weight:500;color:var(--text-secondary)">(pen ' + m.result.penHome + '–' + m.result.penAway + ')</span>'
+    : '';
   const center = hasResult
-    ? '<span class="cmp-score">' + m.result.home + ' - ' + m.result.away + '</span>'
+    ? '<span class="cmp-score">' + m.result.home + ' - ' + m.result.away + penStr + '</span>'
     : '<span class="cmp-vs">vs</span>';
   const subline = hasResult
     ? 'Resultado final'
@@ -1504,8 +1566,13 @@ function getWinnerOf(home, away) {
   const rh = m.result?.home, ra = m.result?.away;
   if (rh === '' || rh == null || ra === '' || ra == null) return null;
   const nh = parseInt(rh), na = parseInt(ra);
-  if (isNaN(nh) || isNaN(na) || nh === na) return null; // draw = wait for pens
-  return nh > na ? m.home : m.away;
+  if (isNaN(nh) || isNaN(na)) return null;
+  if (nh > na) return m.home;
+  if (na > nh) return m.away;
+  // Empate: desempate por penales
+  const pw = penWinner(m.result);
+  if (!pw) return null;
+  return pw === 'H' ? m.home : m.away;
 }
 
 function resolveBracket() {
