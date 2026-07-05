@@ -1,6 +1,6 @@
 // ─── Firebase config ───────────────────────────────────────────────────────
-// IMPORTANTE: Reemplaza estos valores con los de tu proyecto Firebase
-// Instrucciones en README.md
+// IMPORTANTE: Estos son los datos de quiniela_oscar. No cambiar salvo que
+// hayas creado tu propio proyecto Firebase (ver README.md).
 const FIREBASE_CONFIG = {
   apiKey: "AIzaSyCxcTUny4yJoFYi2mn1STXwquzzYmoCI2I",
   authDomain: "quiniela-oscar.firebaseapp.com",
@@ -10,11 +10,81 @@ const FIREBASE_CONFIG = {
   appId: "1:514920301872:web:3eeb5e05dd98b8fdd8f4f5"
 };
 
+// ─── Fuente principal de partidos: openfootball (gratis, sin API key) ───────
+// El botón "Sincronizar" trae calendario, resultados, goleadores y penales
+// directo de openfootball. No requiere configuración.
+//
+// ─── Fuente secundaria opcional: API-Football (marcador en vivo minuto a minuto) ──
+// Solo necesaria si quieres marcadores en vivo más finos que el heurístico de
+// 2 horas. Se configura desde Admin → "Marcador en vivo (opcional)"; la key
+// se guarda en localStorage de tu navegador y las llamadas pasan por
+// /api/resultados para no exponerla en el código fuente.
+const API_CFG_KEY = 'quiniela_api_config';
 
-// ─── API-Football config ─────────────────────────────────────────────────────
-// Registrate gratis en https://dashboard.api-football.com/register
-// y pega tu API key aqui:
-const API_FOOTBALL_KEY = "9999ebd705992251ae7de01915a6deac"; // <-- pega tu key aqui
+function getApiConfig() {
+  try {
+    const saved = localStorage.getItem(API_CFG_KEY);
+    if (saved) return JSON.parse(saved);
+  } catch(e) {}
+  return { apiKey: '', leagueId: '', season: '2026', leagueName: 'FIFA World Cup' };
+}
+function getApiKey() { return getApiConfig().apiKey || ''; }
+function saveApiConfig() {
+  const cfg = {
+    apiKey:     document.getElementById('cfg-apikey').value.trim(),
+    leagueId:   document.getElementById('cfg-leagueid').value.trim(),
+    season:     document.getElementById('cfg-season').value.trim() || '2026',
+    leagueName: document.getElementById('cfg-leaguename').value.trim() || 'FIFA World Cup',
+  };
+  localStorage.setItem(API_CFG_KEY, JSON.stringify(cfg));
+  updateApiConfigStatus();
+  showToast('✅ Configuración guardada');
+}
+function resetApiConfig() {
+  localStorage.removeItem(API_CFG_KEY);
+  loadApiConfigForm();
+  updateApiConfigStatus();
+  showToast('↩️ Configuración de marcador en vivo borrada');
+}
+function loadApiConfigForm() {
+  const cfg = getApiConfig();
+  const elK = document.getElementById('cfg-apikey');
+  const elL = document.getElementById('cfg-leagueid');
+  const elS = document.getElementById('cfg-season');
+  const elN = document.getElementById('cfg-leaguename');
+  if (elK) elK.value = cfg.apiKey || '';
+  if (elL) elL.value = cfg.leagueId || '';
+  if (elS) elS.value = cfg.season || '2026';
+  if (elN) elN.value = cfg.leagueName || 'FIFA World Cup';
+}
+function updateApiConfigStatus() {
+  const cfg = getApiConfig();
+  const el = document.getElementById('api-config-status');
+  if (!el) return;
+  const hasKey = !!cfg.apiKey;
+  el.textContent = hasKey ? '🟢 Marcador en vivo activo' : '⚪ Usando solo openfootball (recomendado)';
+  el.style.color = hasKey ? 'var(--success-text)' : 'var(--text-secondary)';
+}
+function toggleApiKeyVisibility() {
+  const inp = document.getElementById('cfg-apikey');
+  const eye = document.getElementById('cfg-apikey-eye');
+  if (!inp) return;
+  if (inp.type === 'password') { inp.type = 'text';     eye.textContent = '🙈'; }
+  else                          { inp.type = 'password'; eye.textContent = '👁'; }
+}
+function showToast(msg) {
+  let t = document.getElementById('quiniela-toast');
+  if (!t) {
+    t = document.createElement('div');
+    t.id = 'quiniela-toast';
+    t.className = 'toast';
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(t._hideTimer);
+  t._hideTimer = setTimeout(() => t.classList.remove('show'), 2600);
+}
 
 // ─── State ──────────────────────────────────────────────────────────────────
 let db;
@@ -302,6 +372,8 @@ function refreshAll() {
   const elResult = document.getElementById('pts-result');
   if (elExact)  elExact.value  = state.points.exact;
   if (elResult) elResult.value = state.points.result;
+  loadApiConfigForm();
+  updateApiConfigStatus();
 }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
@@ -313,7 +385,7 @@ function showTab(id, btn) {
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   if (btn) btn.classList.add('active');
   if (id === 'tab-comparar') renderComparar();
-  if (id === 'tab-bracket')  renderBracket();
+  if (id === 'tab-bracket') renderBracket();
 }
 function toggleCmpCard(id)  { document.getElementById('cmpc-' + id)?.classList.toggle('open'); }
 function toggleCmpGroup(key) { document.getElementById('cmpg-' + key)?.classList.toggle('open'); }
@@ -324,7 +396,7 @@ function populateCmpDates() {
   if (!sel) return;
   const today = getTodayGuatemala();
   const dates = [...new Set(
-    state.matches.map(m => m.datetime ? dateInGT(m.datetime) : null).filter(Boolean)
+    state.matches.map(m => m.datetime ? getDateGuatemala(m.datetime) : null).filter(Boolean)
   )].sort();
   const current = sel.value;
   sel.innerHTML = '<option value="all">Todos los partidos</option>';
@@ -368,20 +440,72 @@ function isLocked(match) {
   return Date.now() >= new Date(match.datetime).getTime() - 60 * 60 * 1000;
 }
 
-// Ganador por penales en un empate: 'H' | 'A' | null
+// "En vivo": desde la hora de inicio y durante la ventana típica de un partido.
+// Se usa una ventana de 2h40 (en vez de 2h) para cubrir tiempo extra + penales
+// en partidos de eliminación directa, sin marcar "Final" antes de tiempo.
+// El marcador parcial no cancela el estado EN VIVO; solo lo cancela si el
+// admin marcó el partido como finalizado (m.finished === true).
+const MATCH_WINDOW_MS = 2 * 60 * 60 * 1000 + 40 * 60 * 1000; // 2h40
+function isLive(match) {
+  if (!match.datetime) return false;
+  if (match.finished) return false;            // admin marcó como terminado
+  const start = new Date(match.datetime).getTime();
+  const now = Date.now();
+  return now >= start && now < start + MATCH_WINDOW_MS;
+}
+
+// Un partido muestra resultado "Final" solo si ya terminó la ventana EN VIVO
+// O si el admin lo marcó como finalizado explícitamente.
+function isFinished(match) {
+  if (match.finished) return true;
+  if (!match.datetime) return false;
+  const start = new Date(match.datetime).getTime();
+  return Date.now() >= start + MATCH_WINDOW_MS;
+}
+
+// Ganador por penales en un empate: 'H' | 'A' | null (si no hay penales o están empatados)
 function penWinner(result) {
-  if (!result || result.penHome == null || result.penAway == null) return null;
-  if (result.penHome === '' || result.penAway === '') return null;
+  if (!result || !hasVal(result.penHome) || !hasVal(result.penAway)) return null;
   const ph = parseInt(result.penHome), pa = parseInt(result.penAway);
-  if (isNaN(ph) || isNaN(pa) || ph === pa) return null;
+  if (ph === pa) return null;
   return ph > pa ? 'H' : 'A';
 }
 
-function calcPoints(userId, match) {
+// Ganador en tiempo extra cuando el marcador reglamentario (90') fue empate:
+// 'H' | 'A' | null (si no hay tiempo extra registrado o también quedó empatado
+// y el partido se fue a penales).
+function etWinner(result) {
+  if (!result || !hasVal(result.etHome) || !hasVal(result.etAway)) return null;
+  const eh = parseInt(result.etHome), ea = parseInt(result.etAway);
+  if (eh === ea) return null;
+  return eh > ea ? 'H' : 'A';
+}
+
+// Quién avanza realmente en el partido, tomando en cuenta — en ese orden —
+// el marcador reglamentario (90'), el tiempo extra (si el reglamentario fue
+// empate) y los penales (si el tiempo extra también fue empate o no se jugó).
+// Devuelve 'H' | 'A' | null. null significa empate real sin definir todavía
+// (fase de grupos, o un cruce de eliminación aún sin capturar cómo se decidió).
+function matchDecider(result) {
+  if (!result || result.home === '' || result.away === '') return null;
+  const rh = parseInt(result.home), ra = parseInt(result.away);
+  if (rh > ra) return 'H';
+  if (ra > rh) return 'A';
+  return etWinner(result) || penWinner(result) || null;
+}
+
+function calcPoints(userId, match, { includeLive = false } = {}) {
   if (!match.result || match.result.home === '') return 0;
+  const finished = isFinished(match);
+  const live = isLive(match);
+  // Si no está finalizado y no queremos incluir partidos en vivo, retornar 0
+  if (!finished && !(includeLive && live)) return 0;
   const pick = state.picks[userId]?.[match.id];
   if (!pickSet(pick)) return 0;
   const np = normPick(pick);
+  // El marcador exacto siempre se compara contra el resultado reglamentario
+  // (90'), que es lo que la gente pronostica — el tiempo extra y los
+  // penales solo se usan para decidir quién gana el cruce, no el marcador.
   const rh = parseInt(match.result.home), ra = parseInt(match.result.away);
   const ph = parseInt(np.home), pa = parseInt(np.away);
 
@@ -389,14 +513,20 @@ function calcPoints(userId, match) {
   if (ph === rh && pa === ra) return state.points.exact;
 
   // Ganador correcto: 2 pts base
-  // Con penales: quien predijo empate (marcador real) O al ganador de penales, ambos cobran.
-  const pen  = penWinner(match.result);
+  // Si el reglamentario fue empate pero el cruce se definió en tiempo extra o
+  // penales, "rRes" es quien avanzó de verdad; quien predijo el empate
+  // reglamentario o directamente al que avanzó, gana los puntos de ganador.
+  const rawRes = rh > ra ? 'H' : rh < ra ? 'A' : 'D';
+  const decider = matchDecider(match.result); // 'H' | 'A' | null
+  const decidedAfterDraw = rawRes === 'D' && !!decider;
+
+  const rRes = decidedAfterDraw ? decider : rawRes; // 'H', 'A', o 'D'
   const pRes = ph > pa ? 'H' : ph < pa ? 'A' : 'D';
+
   let pts = 0;
-  if (pen) {
-    if (pRes === 'D' || pRes === pen) pts = state.points.result;
+  if (decidedAfterDraw) {
+    if (pRes === 'D' || pRes === decider) pts = state.points.result;
   } else {
-    const rRes = rh > ra ? 'H' : rh < ra ? 'A' : 'D';
     if (pRes === rRes) pts = state.points.result;
   }
 
@@ -406,6 +536,14 @@ function calcPoints(userId, match) {
   // +1 si acertaste el marcador de al menos un equipo
   if (ph === rh || pa === ra) pts += 1;
 
+  // Bono de penales: si predijiste empate Y además elegiste quién avanza en
+  // penales, y acertaste, +1 extra (solo aplica cuando el partido sí se
+  // definió por penales específicamente; no penaliza si no marcaste penPick).
+  const pen = penWinner(match.result);
+  if (pen && pRes === 'D' && pick.penPick && pick.penPick === pen) {
+    pts += 1;
+  }
+
   return pts;
 }
 
@@ -413,9 +551,11 @@ function getTableData() {
   return state.users.map(u => {
     let pts = 0, exact = 0, winner = 0, played = 0;
     state.matches.forEach(m => {
-      if (m.result && m.result.home !== '') {
+      const finished = isFinished(m);
+      const live = isLive(m);
+      if (m.result && m.result.home !== '' && (finished || live)) {
         played++;
-        const p = calcPoints(u.id, m);
+        const p = calcPoints(u.id, m, { includeLive: true });
         pts += p;
         if (p === state.points.exact) exact++;
         else if (p > 0) winner++;
@@ -427,11 +567,11 @@ function getTableData() {
 
 function getStreak(userId) {
   const played = state.matches
-    .filter(m => m.result && m.result.home !== '')
+    .filter(m => m.result && m.result.home !== '' && (isFinished(m) || isLive(m)))
     .sort((a, b) => new Date(b.datetime) - new Date(a.datetime));
   let streak = 0;
   for (const m of played) {
-    const pts = calcPoints(userId, m);
+    const pts = calcPoints(userId, m, { includeLive: true });
     if (streak === 0) { streak = pts > 0 ? 1 : -1; continue; }
     if (streak > 0 && pts > 0) streak++;
     else if (streak < 0 && pts === 0) streak--;
@@ -448,9 +588,11 @@ function renderMyStats() {
   const u = state.currentUser;
   let pts = 0, exact = 0, winner = 0, played = 0, pending = 0;
   state.matches.forEach(m => {
-    if (m.result && m.result.home !== '') {
+    const mFinished = isFinished(m);
+    const mLive = isLive(m);
+    if (m.result && m.result.home !== '' && (mFinished || mLive)) {
       played++;
-      const p = calcPoints(u.id, m);
+      const p = calcPoints(u.id, m, { includeLive: true });
       pts += p;
       if (p === state.points.exact) exact++;
       else if (p > 0) winner++;
@@ -481,36 +623,23 @@ function renderMyStats() {
 
 // ─── Date filter helpers ──────────────────────────────────────────────────────
 
-// Zona horaria fija de Guatemala (UTC-6, sin horario de verano)
-const GT_TZ = 'America/Guatemala';
-
-// Retorna la fecha "YYYY-MM-DD" de un datetime en zona horaria de Guatemala
-function dateInGT(datetime) {
-  return new Date(datetime).toLocaleDateString('en-CA', { timeZone: GT_TZ }); // en-CA da formato YYYY-MM-DD
-}
-
-// Formatea solo la hora en zona horaria de Guatemala
-function fmtTime(datetime) {
-  return new Date(datetime).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', timeZone: GT_TZ });
-}
-
-// Formatea fecha corta en zona horaria de Guatemala (ej: "12 jun")
-function fmtDateShort(datetime) {
-  return new Date(datetime).toLocaleDateString('es', { day: 'numeric', month: 'short', timeZone: GT_TZ });
-}
-
-// Formatea fecha larga en zona horaria de Guatemala (ej: "viernes, 12 de junio")
-function fmtDateLong(datetime, options = {}) {
-  return new Date(datetime).toLocaleDateString('es', { timeZone: GT_TZ, ...options });
-}
-
 // Retorna la fecha de hoy en zona horaria de Guatemala (UTC-6) como "YYYY-MM-DD"
 function getTodayGuatemala() {
-  const now = new Date();
-  // Guatemala es UTC-6 (sin cambio de horario de verano)
-  const offset = -6 * 60; // minutos
-  const local = new Date(now.getTime() + (offset - now.getTimezoneOffset()) * 60000);
+  return getDateGuatemala(new Date());
+}
+// Convierte cualquier datetime (UTC ISO string o Date) a fecha "YYYY-MM-DD" en Guatemala (UTC-6)
+function getDateGuatemala(dt) {
+  const d = (dt instanceof Date) ? dt : new Date(dt);
+  const GT_OFFSET = -6 * 60; // Guatemala = UTC-6, sin horario de verano
+  const local = new Date(d.getTime() + (GT_OFFSET - d.getTimezoneOffset()) * 60000);
   return local.toISOString().slice(0, 10);
+}
+// Igual pero retorna "YYYY-MM-DDTHH:MM" en hora Guatemala (para datetime-local inputs)
+function getLocalGuatemala(dt) {
+  const d = (dt instanceof Date) ? dt : new Date(dt);
+  const GT_OFFSET = -6 * 60;
+  const local = new Date(d.getTime() + (GT_OFFSET - d.getTimezoneOffset()) * 60000);
+  return local.toISOString().slice(0, 16);
 }
 
 function populateDateFilter() {
@@ -520,12 +649,12 @@ function populateDateFilter() {
   const today = getTodayGuatemala();
   // Get unique dates
   const dates = [...new Set(
-    state.matches.map(m => m.datetime ? dateInGT(m.datetime) : null).filter(Boolean)
+    state.matches.map(m => m.datetime ? getDateGuatemala(m.datetime) : null).filter(Boolean)
   )].sort();
   sel.innerHTML = '<option value="all">Todos los partidos</option>';
   dates.forEach(d => {
-    const dt = new Date(d + 'T12:00:00Z');
-    const label = fmtDateLong(dt, { weekday: 'long', day: 'numeric', month: 'long' });
+    const dt = new Date(d + 'T12:00:00');
+    const label = dt.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Guatemala' });
     const o = document.createElement('option');
     o.value = d;
     o.textContent = (d === today ? '📅 Hoy — ' : '') + label.charAt(0).toUpperCase() + label.slice(1);
@@ -540,8 +669,8 @@ function populateDateFilter() {
 }
 
 function formatDayLabel(d) {
-  const dt = new Date(d + 'T12:00:00Z');
-  const s = fmtDateLong(dt, { weekday: 'long', day: 'numeric', month: 'long' });
+  const dt = new Date(d + 'T12:00:00');
+  const s = dt.toLocaleDateString('es', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Guatemala' });
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 // Mueve la selección entre días disponibles (‹ ›) en Mi quiniela
@@ -575,7 +704,7 @@ function renderMatches() {
 
   let filteredMatches = [...state.matches];
   if (dateFilter !== 'all') {
-    filteredMatches = filteredMatches.filter(m => m.datetime && dateInGT(m.datetime) === dateFilter);
+    filteredMatches = filteredMatches.filter(m => m.datetime && getDateGuatemala(m.datetime) === dateFilter);
   }
 
   if (filteredMatches.length === 0) {
@@ -599,8 +728,13 @@ function renderMatches() {
 
     ms.forEach(m => {
       const locked = isLocked(m);
+      const live = isLive(m);
+      const finished = isFinished(m);
+      const hasResult = m.result && m.result.home !== '' && m.result.away !== '';
+      // "resultKnown" para puntos: cuando el partido terminó o está en vivo con resultado
+      const resultKnown = hasResult && finished;
+      const resultLive  = hasResult && live && !finished;
       const pick = state.picks[editUser.id]?.[m.id] || { home: '', away: '' };
-      const resultKnown = m.result && m.result.home !== '' && m.result.away !== '';
       const np = normPick(pick);
 
       let statusBadge = '';
@@ -612,11 +746,20 @@ function renderMatches() {
           statusBadge = `<span class="badge badge-purple">+${pts}</span>`;
         else if (pickSet(pick))
           statusBadge = `<span class="badge badge-gray">+0</span>`;
+      } else if (resultLive && pickSet(pick)) {
+        // Puntos tentativos mientras el partido está en vivo
+        const pts = calcPoints(editUser.id, m, { includeLive: true });
+        if (pts === state.points.exact)
+          statusBadge = `<span class="badge badge-success" style="opacity:.7" title="Tentativo, pendiente de finalizar">~+${pts} exacto</span>`;
+        else if (pts > 0)
+          statusBadge = `<span class="badge badge-purple" style="opacity:.7" title="Tentativo, pendiente de finalizar">~+${pts}</span>`;
+        else
+          statusBadge = `<span class="badge badge-gray" style="opacity:.7" title="Tentativo, pendiente de finalizar">~+0</span>`;
       }
 
-      const timeStr = fmtTime(m.datetime);
+      const timeStr = new Date(m.datetime).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Guatemala' });
 
-      const center = locked || resultKnown
+      const center = locked || hasResult
         ? `<div class="mq-final">${pickSet(pick) ? `${np.home}<span>–</span>${np.away}` : `<span style="opacity:.5">– –</span>`}</div>`
         : `<div class="mq-inputs">
              <input type="number" min="0" max="20" class="score-input" value="${pick.home}" placeholder="0"
@@ -626,7 +769,41 @@ function renderMatches() {
                onfocus="this.select()" onchange="setPick('${editUser.id}','${m.id}','away',this.value)">
            </div>`;
 
-      html += `<div class="mq-card">
+      // Si el pronóstico del usuario es empate y el partido aún no está bloqueado,
+      // ofrecer elegir quién avanza en penales para un punto extra si acierta.
+      const isDrawPick = !locked && pickSet(pick) && +np.home === +np.away;
+      const penPickHtml = isDrawPick
+        ? `<div class="mq-penpick">
+             <span class="mq-penpick-label"><i class="ti ti-target-arrow"></i> Si hay penales, ¿quién avanza? <small>(+1 pt extra)</small></span>
+             <div class="mq-penpick-opts">
+               <button type="button" class="penpick-btn${pick.penPick === 'H' ? ' active' : ''}" onclick="setPenPick('${editUser.id}','${m.id}','H')">
+                 ${flagImg(m.home, 'flag-sm')} ${m.home}
+               </button>
+               <button type="button" class="penpick-btn${pick.penPick === 'A' ? ' active' : ''}" onclick="setPenPick('${editUser.id}','${m.id}','A')">
+                 ${flagImg(m.away, 'flag-sm')} ${m.away}
+               </button>
+             </div>
+           </div>`
+        : '';
+
+      // Marcador parcial en vivo (hay resultado pero aún en ventana de 2h)
+      const liveScore = live && hasResult
+        ? `<span class="badge badge-live-score">${m.result.home}–${m.result.away}</span>`
+        : '';
+
+      // Goleadores
+      const hasGoals = hasResult && ((m.goals1 && m.goals1.length) || (m.goals2 && m.goals2.length));
+      const scorersHtml = hasGoals ? (() => {
+        const homeGoals = (m.goals1 || []).map(g => `<span class="scorer-item">${g.name} <span class="scorer-min">${g.minute}'</span></span>`).join('');
+        const awayGoals = (m.goals2 || []).map(g => `<span class="scorer-item">${g.name} <span class="scorer-min">${g.minute}'</span></span>`).join('');
+        return `<div class="mq-scorers">
+          <div class="scorers-col scorers-home">${homeGoals}</div>
+          <div class="scorers-icon"><i class="ti ti-ball-football"></i></div>
+          <div class="scorers-col scorers-away">${awayGoals}</div>
+        </div>`;
+      })() : '';
+
+      html += `<div class="mq-card${live ? ' card-live' : ''}">
         <div class="mq-fixture">
           <div class="mq-team">${flagImg(m.home, 'flag-lg')}<span class="mq-name">${m.home}</span></div>
           ${center}
@@ -634,10 +811,16 @@ function renderMatches() {
         </div>
         <div class="mq-foot">
           <span class="mq-time"><i class="ti ti-clock"></i> ${timeStr}</span>
-          ${locked && !resultKnown ? `<span class="badge badge-warning"><i class="ti ti-lock"></i> bloqueado</span>` : ''}
-          ${resultKnown ? `<span class="badge badge-gray">Final ${m.result.home}–${m.result.away}</span>` : ''}
+          ${live ? `<span class="badge badge-live"><i class="ti ti-broadcast"></i> EN VIVO</span>` : ''}
+          ${liveScore}
+          ${locked && !hasResult && !live ? `<span class="badge badge-warning"><i class="ti ti-lock"></i> bloqueado</span>` : ''}
+          ${resultKnown ? `<span class="badge badge-gray">Final ${m.result.home}–${m.result.away}${hasVal(m.result.etHome) ? ` (t.e. ${m.result.etHome}–${m.result.etAway})` : ''}</span>` : ''}
+          ${resultKnown && penWinner(m.result) ? `<span class="badge badge-info">Pen ${m.result.penHome}–${m.result.penAway} · ${penWinner(m.result) === 'H' ? m.home : m.away} ✓</span>` : ''}
+          ${resultKnown && !penWinner(m.result) && etWinner(m.result) ? `<span class="badge badge-info">${etWinner(m.result) === 'H' ? m.home : m.away} avanza en tiempo extra ✓</span>` : ''}
           ${statusBadge}
         </div>
+        ${penPickHtml}
+        ${scorersHtml}
       </div>`;
     });
 
@@ -652,6 +835,181 @@ async function setPick(userId, matchId, side, val) {
   if (!state.picks[userId][matchId]) state.picks[userId][matchId] = { home: '', away: '' };
   state.picks[userId][matchId][side] = val === '' ? '' : parseInt(val);
   await saveState();
+  renderMatches();
+}
+
+// Elegir quién avanza en penales — solo disponible cuando el pronóstico es empate.
+async function setPenPick(userId, matchId, side) {
+  if (!state.picks[userId]) state.picks[userId] = {};
+  if (!state.picks[userId][matchId]) state.picks[userId][matchId] = { home: '', away: '' };
+  const pick = state.picks[userId][matchId];
+  pick.penPick = (pick.penPick === side) ? null : side; // toggle
+  await saveState();
+  renderMatches();
+}
+
+
+// ─── Render: Comparar ────────────────────────────────────────────────────────
+function renderComparar() {
+  const container = document.getElementById('comparar-list');
+  if (!container) return;
+
+  populateCmpDates();
+
+  const dateFilter = document.getElementById('cmp-date-filter')?.value || 'all';
+
+  if (!state.users.length || !state.matches.length) {
+    container.innerHTML = `<div style="text-align:center;padding:3rem;color:var(--text-secondary)">
+      <i class="ti ti-users" style="font-size:28px;display:block;margin-bottom:10px"></i>
+      No hay datos para comparar aún
+    </div>`;
+    return;
+  }
+
+  let matches = [...state.matches];
+  if (dateFilter !== 'all') {
+    matches = matches.filter(m => m.datetime && getDateGuatemala(m.datetime) === dateFilter);
+  }
+
+  const me = state.currentUser;
+  let html = rankingHtml();
+
+  // Agrupar por fase
+  const phases = [...new Set(matches.map(m => m.phase))];
+
+  phases.forEach(phase => {
+    const phaseMatches = matches.filter(m => m.phase === phase);
+    const phaseId = phase.replace(/\s+/g, '_');
+
+    const matchCards = phaseMatches.map(m => {
+      const hasResult = m.result && m.result.home !== '' && m.result.away !== '';
+      const finished  = isFinished(m);
+      const live      = isLive(m);
+      const timeStr   = new Date(m.datetime).toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Guatemala' });
+      const dateStr   = new Date(m.datetime).toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'America/Guatemala' });
+
+      // Quién acertó
+      const winners = state.users.filter(u => {
+        const p = calcPoints(u.id, m, { includeLive: true });
+        return p > 0 && hasResult && (finished || live);
+      });
+      const exactWinners = state.users.filter(u => {
+        const p = calcPoints(u.id, m, { includeLive: true });
+        return p === state.points.exact && hasResult && (finished || live);
+      });
+
+      // Mi predicción
+      const myPick = me ? (state.picks[me.id]?.[m.id] || null) : null;
+      const myNp   = myPick ? normPick(myPick) : null;
+      const myPts  = me && hasResult && (finished || live) ? calcPoints(me.id, m, { includeLive: true }) : null;
+
+      const resultBadge = finished
+        ? `<span class="badge badge-gray">Final ${m.result.home}–${m.result.away}${hasVal(m.result.etHome) ? ` (t.e. ${m.result.etHome}–${m.result.etAway})` : ''}${penWinner(m.result) ? ` · Pen ${m.result.penHome}–${m.result.penAway}` : ''}</span>`
+        : live
+        ? `<span class="badge badge-live"><i class="ti ti-broadcast"></i> EN VIVO ${hasResult ? m.result.home+'–'+m.result.away : ''}</span>`
+        : '';
+
+      const winnersHtml = (finished || live) && hasResult
+        ? exactWinners.length
+          ? `<div class="cmp-winners">${exactWinners.map(u => {
+              const color = colorFor(u.name);
+              return `<span class="cmp-win">
+                <span class="cmp-avatar" style="background:${color}30;color:${color}">${initials(u.name)}</span>
+                <span>${u.name.split(' ')[0]}</span>
+                <span class="badge-win">exacto ✓</span>
+              </span>`;
+            }).join('')}
+            ${winners.filter(u => !exactWinners.find(e => e.id === u.id)).map(u => {
+              const color = colorFor(u.name);
+              return `<span class="cmp-win">
+                <span class="cmp-avatar" style="background:${color}30;color:${color}">${initials(u.name)}</span>
+                <span>${u.name.split(' ')[0]}</span>
+              </span>`;
+            }).join('')}</div>`
+          : winners.length
+          ? `<div class="cmp-winners">${winners.map(u => {
+              const color = colorFor(u.name);
+              return `<span class="cmp-win">
+                <span class="cmp-avatar" style="background:${color}30;color:${color}">${initials(u.name)}</span>
+                <span>${u.name.split(' ')[0]}</span>
+              </span>`;
+            }).join('')}</div>`
+          : `<div class="cmp-winners"><span class="cmp-noone">Nadie acertó</span></div>`
+        : '';
+
+      // Badge para puntos en el detalle
+      const badgeFor = pts => pts === state.points.exact ? 'badge-success' : pts > 0 ? 'badge-purple' : 'badge-danger';
+      const meId = me ? me.id : null;
+
+      // Detalle: todas las predicciones de todos los participantes, ordenadas por puntos
+      const detailRows = state.users
+        .map(u => {
+          const pk = state.picks[u.id]?.[m.id];
+          const has = pickSet(pk);
+          const np = has ? normPick(pk) : null;
+          const pts = hasResult && has && (finished || live) ? calcPoints(u.id, m, { includeLive: true }) : null;
+          return { u, has, np, pts };
+        })
+        .sort((a, b) => (b.pts ?? -1) - (a.pts ?? -1))
+        .map(r => {
+          const color = colorFor(r.u.name);
+          const pickStr = r.has ? r.np.home + '–' + r.np.away : '–';
+          const cls = r.pts !== null ? badgeFor(r.pts) : 'badge-gray';
+          return '<div class="cmp-pred' + (r.u.id === meId ? ' me' : '') + '">'
+            + '<span class="cmp-avatar" style="background:' + color + '30;color:' + color + '">' + initials(r.u.name) + '</span>'
+            + '<span class="cmp-pred-name">' + r.u.name.split(' ')[0] + '</span>'
+            + '<span class="cmp-pred-pick">' + pickStr + '</span>'
+            + '<span class="badge ' + cls + ' cmp-pred-badge">' + (r.pts !== null ? '+' + r.pts : '·') + '</span>'
+            + '</div>';
+        }).join('');
+
+      const myPickHtml = me && pickSet(myPick)
+        ? `<div class="cmp-mine">
+            <span class="cmp-mine-label"><i class="ti ti-user"></i> Mi pronóstico</span>
+            <span class="cmp-mine-val">${myNp.home} – ${myNp.away}</span>
+            ${myPts !== null ? `<span class="cmp-mine-pts">${myPts > 0 ? '+' + myPts + ' pts' : '+0'}</span>` : ''}
+          </div>`
+        : me
+        ? `<div class="cmp-mine" style="opacity:.5">
+            <span class="cmp-mine-label"><i class="ti ti-user"></i> Mi pronóstico</span>
+            <span class="cmp-mine-val" style="color:var(--text-secondary);font-size:13px">Sin pronóstico</span>
+          </div>`
+        : '';
+
+      return `<div class="cmp-card" id="cmpc-${m.id}">
+        <div class="cmp-fixture">
+          <div class="cmp-team home">${m.home} ${flagImg(m.home, 'flag')}</div>
+          <div>
+            ${hasResult && (finished || live)
+              ? `<div class="cmp-score">${m.result.home} – ${m.result.away}</div>`
+              : `<div class="cmp-vs">${timeStr}</div>`}
+          </div>
+          <div class="cmp-team away">${flagImg(m.away, 'flag')} ${m.away}</div>
+        </div>
+        <div class="cmp-subline">${dateStr} · ${phase} ${resultBadge}</div>
+        ${myPickHtml}
+        ${winnersHtml}
+        <button class="cmp-toggle" onclick="toggleCmpCard('${m.id}')">
+          <span class="cmp-toggle-label"></span><i class="ti ti-chevron-down cmp-chev"></i>
+        </button>
+        <div class="cmp-detail-wrap"><div class="cmp-detail">${detailRows}</div></div>
+      </div>`;
+    }).join('');
+
+    html += `<div class="cmp-group open" id="cmpg-${phaseId}">
+      <button class="cmp-group-head" onclick="toggleCmpGroup('${phaseId}')">
+        <i class="ti ti-layout-list cmp-group-icon"></i>
+        <span class="cmp-group-title">${phase}</span>
+        <span class="cmp-group-count">${phaseMatches.length}</span>
+        <i class="ti ti-chevron-down cmp-chev"></i>
+      </button>
+      <div class="cmp-group-wrap">
+        <div class="cmp-group-body">${matchCards}</div>
+      </div>
+    </div>`;
+  });
+
+  container.innerHTML = html;
 }
 
 // ─── Render: Tabla ───────────────────────────────────────────────────────────
@@ -786,12 +1144,12 @@ function renderAdminMatches() {
   if (adminSel) {
     const currentVal = adminSel.value;
     const dates = [...new Set(
-      state.matches.map(m => m.datetime ? dateInGT(m.datetime) : null).filter(Boolean)
+      state.matches.map(m => m.datetime ? getDateGuatemala(m.datetime) : null).filter(Boolean)
     )].sort();
     adminSel.innerHTML = '<option value="all">Todas las fechas</option>';
     dates.forEach(d => {
-      const dt = new Date(d + 'T12:00:00Z');
-      const label = fmtDateLong(dt, { weekday: 'short', day: 'numeric', month: 'short' });
+      const dt = new Date(d + 'T12:00:00');
+      const label = dt.toLocaleDateString('es', { weekday: 'short', day: 'numeric', month: 'short', timeZone: 'America/Guatemala' });
       const o = document.createElement('option');
       o.value = d; o.textContent = label;
       adminSel.appendChild(o);
@@ -802,7 +1160,7 @@ function renderAdminMatches() {
   const adminDateFilter = document.getElementById('admin-date-filter')?.value || 'all';
   let matches = adminDateFilter === 'all'
     ? state.matches
-    : state.matches.filter(m => m.datetime && dateInGT(m.datetime) === adminDateFilter);
+    : state.matches.filter(m => m.datetime && getDateGuatemala(m.datetime) === adminDateFilter);
 
   if (matches.length === 0) {
     container.innerHTML = '<p style="font-size:13px;color:var(--text-secondary)">No hay partidos para esta fecha.</p>';
@@ -810,32 +1168,43 @@ function renderAdminMatches() {
   }
 
   container.innerHTML = matches.map(m => {
-    const dtStr = fmtDateShort(m.datetime) + ' ' + fmtTime(m.datetime);
-    const hasResult = m.result && m.result.home !== '';
+    const dt = new Date(m.datetime);
+    const dtStr = dt.toLocaleDateString('es', { day: 'numeric', month: 'short', timeZone: 'America/Guatemala' })
+      + ' ' + dt.toLocaleTimeString('es', { hour: '2-digit', minute: '2-digit', timeZone: 'America/Guatemala' });
+    const hasResult = m.result && m.result.home !== '' && m.result.away !== '';
     const isDraw = hasResult && parseInt(m.result.home) === parseInt(m.result.away);
-    const hasPen = isDraw && (m.result.penHome != null && m.result.penHome !== '');
+    const live = isLive(m);
 
     return `<div class="admin-match-row">
       <span style="font-size:13px;flex:1;min-width:160px">
         <strong>${m.home}</strong> vs <strong>${m.away}</strong><br>
         <span style="color:var(--text-secondary);font-size:11px">${dtStr} · ${m.phase}</span>
+        ${live ? `<span class="badge badge-live" style="font-size:10px;padding:1px 6px;margin-left:4px"><i class="ti ti-broadcast"></i> EN VIVO</span>` : ''}
+        ${m.finished ? `<span class="badge badge-gray" style="font-size:10px;padding:1px 6px;margin-left:4px">Finalizado</span>` : ''}
       </span>
       <input type="number" min="0" max="20" placeholder="L" value="${hasResult ? m.result.home : ''}"
-        id="res-h-${m.id}" class="score-input" oninput="togglePenBlock('${m.id}')">
+        id="res-h-${m.id}" class="score-input">
       <span class="score-sep">–</span>
       <input type="number" min="0" max="20" placeholder="V" value="${hasResult ? m.result.away : ''}"
-        id="res-a-${m.id}" class="score-input" oninput="togglePenBlock('${m.id}')">
-      <div class="pen-block${isDraw ? '' : ' hidden'}" id="pen-block-${m.id}">
-        <span class="pen-label">Pen</span>
-        <input type="number" min="0" max="20" placeholder="L" value="${hasPen ? m.result.penHome : ''}"
-          id="pen-h-${m.id}" class="pen-input">
-        <span class="score-sep">–</span>
-        <input type="number" min="0" max="20" placeholder="V" value="${hasPen ? m.result.penAway : ''}"
-          id="pen-a-${m.id}" class="pen-input">
-      </div>
+        id="res-a-${m.id}" class="score-input">
+      ${isDraw ? `<span class="pen-label">T.E.</span>
+      <input type="number" min="0" max="20" placeholder="L" value="${hasVal(m.result.etHome) ? m.result.etHome : ''}"
+        id="et-h-${m.id}" class="score-input" title="Marcador al final del tiempo extra (si lo hubo)">
+      <span class="score-sep">–</span>
+      <input type="number" min="0" max="20" placeholder="V" value="${hasVal(m.result.etAway) ? m.result.etAway : ''}"
+        id="et-a-${m.id}" class="score-input" title="Marcador al final del tiempo extra (si lo hubo)">
+      <span class="pen-label">Pen</span>
+      <input type="number" min="0" max="20" placeholder="L" value="${hasVal(m.result.penHome) ? m.result.penHome : ''}"
+        id="pen-h-${m.id}" class="score-input" title="Solo si se definió en penales">
+      <span class="score-sep">–</span>
+      <input type="number" min="0" max="20" placeholder="V" value="${hasVal(m.result.penAway) ? m.result.penAway : ''}"
+        id="pen-a-${m.id}" class="score-input" title="Solo si se definió en penales">` : ''}
       <button class="btn btn-sm btn-primary" onclick="saveResult('${m.id}')">
         <i class="ti ti-check"></i> Guardar
       </button>
+      ${live || m.finished ? `<button class="btn btn-sm ${m.finished ? '' : 'btn-danger'}" onclick="toggleFinished('${m.id}')" title="${m.finished ? 'Reabrir partido' : 'Marcar como finalizado'}">
+        <i class="ti ti-${m.finished ? 'player-play' : 'flag-check'}"></i>
+      </button>` : ''}
       <button class="btn btn-sm" onclick="openEditModal('${m.id}')" title="Editar partido">
         <i class="ti ti-edit"></i>
       </button>
@@ -851,21 +1220,32 @@ async function saveResult(matchId) {
   const a = document.getElementById('res-a-' + matchId).value;
   const m = state.matches.find(x => x.id === matchId);
   if (!m) return;
-  const isDraw = h !== '' && a !== '' && parseInt(h) === parseInt(a);
-  const penH = isDraw ? (document.getElementById('pen-h-' + matchId)?.value ?? '') : '';
-  const penA = isDraw ? (document.getElementById('pen-a-' + matchId)?.value ?? '') : '';
-  m.result = { home: h, away: a, penHome: penH, penAway: penA };
+  const result = { home: h, away: a };
+  // Tiempo extra (solo si el partido es empate y se rindieron los inputs)
+  const etH = document.getElementById('et-h-' + matchId);
+  const etA = document.getElementById('et-a-' + matchId);
+  if (etH && etA && etH.value !== '' && etA.value !== '') {
+    result.etHome = parseInt(etH.value);
+    result.etAway = parseInt(etA.value);
+  }
+  // Penales (solo si el partido es empate y se rendían los inputs)
+  const penH = document.getElementById('pen-h-' + matchId);
+  const penA = document.getElementById('pen-a-' + matchId);
+  if (penH && penA && penH.value !== '' && penA.value !== '') {
+    result.penHome = parseInt(penH.value);
+    result.penAway = parseInt(penA.value);
+  }
+  m.result = result;
   await saveState();
 }
 
-// Muestra u oculta el bloque de penales según si el marcador es empate
-function togglePenBlock(matchId) {
-  const h = document.getElementById('res-h-' + matchId)?.value;
-  const a = document.getElementById('res-a-' + matchId)?.value;
-  const block = document.getElementById('pen-block-' + matchId);
-  if (!block) return;
-  const isDraw = h !== '' && a !== '' && parseInt(h) === parseInt(a);
-  block.classList.toggle('hidden', !isDraw);
+async function toggleFinished(matchId) {
+  const m = state.matches.find(x => x.id === matchId);
+  if (!m) return;
+  m.finished = !m.finished;
+  await saveState();
+  renderAdminMatches();
+  renderMatches();
 }
 
 let _deleteMatchId = null;
@@ -900,10 +1280,7 @@ function openEditModal(matchId) {
   _editMatchId = matchId;
   document.getElementById('edit-home').value  = m.home;
   document.getElementById('edit-away').value  = m.away;
-  const _ed = new Date(m.datetime.endsWith('Z') ? m.datetime : m.datetime + 'Z');
-  const _gtOff = -6 * 60, _brOff = _ed.getTimezoneOffset();
-  const _edLocal = new Date(_ed.getTime() + (_gtOff - (-_brOff)) * 60000);
-  document.getElementById('edit-date').value = _edLocal.toISOString().slice(0,16);
+  document.getElementById('edit-date').value  = getLocalGuatemala(m.datetime);
   document.getElementById('edit-phase').value = m.phase;
   document.getElementById('modal-overlay').classList.remove('hidden');
 }
@@ -917,11 +1294,19 @@ async function saveEdit() {
   if (!m) return;
   m.home     = document.getElementById('edit-home').value.trim()  || m.home;
   m.away     = document.getElementById('edit-away').value.trim()  || m.away;
-  const _editVal = document.getElementById('edit-date').value;
-  if (_editVal) {
-    const _gt = new Date(_editVal);
-    const _utc = new Date(_gt.getTime() + (_gt.getTimezoneOffset() - 6*60) * 60000);
-    m.datetime = _utc.toISOString().replace('.000Z','Z').slice(0,19) + 'Z';
+  const editDateVal = document.getElementById('edit-date').value;
+  if (editDateVal) {
+    // datetime-local gives local time; convert Guatemala (UTC-6) → UTC
+    const localDt = new Date(editDateVal);
+    const utcMs = localDt.getTime() + (-6 - (-localDt.getTimezoneOffset()/60)) * 3600000;
+    // Simpler: treat input as Guatemala time, add 6h to get UTC
+    const gtMs = new Date(editDateVal).getTime();
+    const gtDate = new Date(editDateVal + ':00');  // local parse
+    // Convert: Guatemala is UTC-6, so UTC = local + 6h
+    const browserOffset = gtDate.getTimezoneOffset(); // browser's own offset in minutes
+    const gtOffset = 6 * 60; // Guatemala ahead of UTC by 6h (UTC-6 means 6h behind)
+    const utcDate2 = new Date(gtDate.getTime() + (browserOffset - gtOffset) * 60000);
+    m.datetime = utcDate2.toISOString().replace('.000Z', 'Z').slice(0, 19) + 'Z';
   }
   m.phase    = document.getElementById('edit-phase').value        || m.phase;
   closeModal();
@@ -933,12 +1318,14 @@ async function saveEdit() {
 async function addMatch() {
   const home = document.getElementById('m-home').value.trim();
   const away = document.getElementById('m-away').value.trim();
-  const _rawDate = document.getElementById('m-date').value;
-  let datetime = _rawDate;
-  if (_rawDate) {
-    const _d = new Date(_rawDate);
-    const _utc2 = new Date(_d.getTime() + (_d.getTimezoneOffset() - 6*60) * 60000);
-    datetime = _utc2.toISOString().replace('.000Z','Z').slice(0,19) + 'Z';
+  const rawDate = document.getElementById('m-date').value;
+  let datetime = rawDate;
+  if (rawDate) {
+    const gtDate = new Date(rawDate);
+    const browserOffset = gtDate.getTimezoneOffset();
+    const gtOffset = 6 * 60;
+    const utcDate = new Date(gtDate.getTime() + (browserOffset - gtOffset) * 60000);
+    datetime = utcDate.toISOString().replace('.000Z', 'Z').slice(0, 19) + 'Z';
   }
   const phase = document.getElementById('m-phase').value;
   if (!home || !away || !datetime) { alert('Completa todos los campos del partido'); return; }
@@ -1024,7 +1411,7 @@ function resetEditAs(e) {
 // ─── Sincronización completa desde openfootball ──────────────────────────────
 async function syncAll() {
   const btn = document.getElementById('btn-sync-all');
-  const steps = ['Conectando...','Importando partidos...','Corrigiendo horarios y fases...','Limpiando duplicados...','Guardando...'];
+  const steps = ['Conectando...','Importando partidos...','Corrigiendo horarios...','Actualizando resultados...','Limpiando duplicados...'];
   let si = 0;
   const tick = () => { if (btn) btn.textContent = steps[Math.min(si++, steps.length-1)]; };
   tick(); if (btn) btn.disabled = true;
@@ -1038,6 +1425,8 @@ async function syncAll() {
 
     const pad = n => String(n).padStart(2,'0');
 
+    // Convierte "19:00 UTC-6" en fecha "2026-06-29" → ISO UTC correcto
+    // Usa Date.UTC() para evitar que el browser interprete como hora local (double-conversion bug)
     function toUTC(dateStr, timeAndTz) {
       const parts = (timeAndTz || '12:00 UTC-6').split(' ');
       const timeStr = parts[0], tzStr = parts[1] || 'UTC-6';
@@ -1045,6 +1434,7 @@ async function syncAll() {
       const [yyyy, mm, dd] = dateStr.split('-').map(Number);
       const tzMatch = tzStr.match(/UTC([+-]\d+)/);
       const tzOffset = tzMatch ? parseInt(tzMatch[1]) : -6;
+      // Date.UTC crea timestamp en UTC puro, sin zona horaria del browser
       const utcMs = Date.UTC(yyyy, mm - 1, dd, h, min, 0) - tzOffset * 3600000;
       const u = new Date(utcMs);
       return u.getUTCFullYear() + '-' + pad(u.getUTCMonth()+1) + '-' + pad(u.getUTCDate())
@@ -1053,13 +1443,13 @@ async function syncAll() {
 
     function roundToPhase(round, group) {
       const r = (round || '').toLowerCase();
-      if (r.includes('round of 32'))                     return '16avos de final';
-      if (r.includes('round of 16'))                     return 'Octavos de final';
-      if (r.includes('quarter'))                         return 'Cuartos de final';
-      if (r.includes('semi'))                            return 'Semifinal';
-      if (r.includes('third') || r.includes('tercer'))  return 'Tercer lugar';
-      if (r === 'final')                                 return 'Final';
-      if (group)                                         return 'Fase de grupos - ' + group;
+      if (r.includes('round of 32'))                    return '16avos de final';
+      if (r.includes('round of 16'))                    return 'Octavos de final';
+      if (r.includes('quarter'))                        return 'Cuartos de final';
+      if (r.includes('semi'))                           return 'Semifinal';
+      if (r.includes('third') || r.includes('tercer')) return 'Tercer lugar';
+      if (r === 'final')                                return 'Final';
+      if (group)                                        return 'Fase de grupos - ' + group;
       return 'Fase de grupos';
     }
 
@@ -1071,6 +1461,7 @@ async function syncAll() {
       return false;
     }
 
+    // PASO 1: Importar nuevos y corregir existentes
     tick();
     let added = 0, timeFixed = 0, phaseFixed = 0, resultsFixed = 0;
 
@@ -1082,37 +1473,33 @@ async function syncAll() {
       const phase    = roundToPhase(of.round, of.group);
       const result   = of.score?.ft
         ? {
-            home:    String(of.score.ft[0]),
-            away:    String(of.score.ft[1]),
-            penHome: of.score.p ? String(of.score.p[0]) : '',
-            penAway: of.score.p ? String(of.score.p[1]) : '',
+            home: String(of.score.ft[0]),
+            away: String(of.score.ft[1]),
+            // Tiempo extra y penales, si el cruce llegó hasta ahí — necesarios
+            // para saber quién avanza cuando el marcador reglamentario es empate.
+            ...(of.score.et ? { etHome: of.score.et[0],  etAway: of.score.et[1]  } : {}),
+            ...(of.score.p  ? { penHome: of.score.p[0],  penAway: of.score.p[1] } : {}),
           }
         : null;
       const goals1 = (of.goals1 || []).map(g => ({ name: g.name, minute: g.minute }));
       const goals2 = (of.goals2 || []).map(g => ({ name: g.name, minute: g.minute }));
 
       const existing = state.matches.find(m => m.home === home && m.away === away);
+
       if (existing) {
         if (existing.datetime !== datetime) { existing.datetime = datetime; timeFixed++; }
         if (existing.phase !== phase)       { existing.phase = phase;       phaseFixed++; }
-        if (result && (existing.result?.home !== result.home || existing.result?.away !== result.away)) {
-          // Preservar penales manuales si openfootball aún no los publica
-          existing.result = {
-            home:    result.home,
-            away:    result.away,
-            penHome: result.penHome !== '' ? result.penHome : (existing.result?.penHome ?? ''),
-            penAway: result.penAway !== '' ? result.penAway : (existing.result?.penAway ?? ''),
-          };
-          resultsFixed++;
-        } else if (result && of.score?.p) {
-          // Marcador ya coincidía pero pueden llegar penales nuevos
-          if (!existing.result?.penHome) {
-            existing.result.penHome = result.penHome;
-            existing.result.penAway = result.penAway;
-            resultsFixed++;
+        if (result) {
+          const ftChanged = existing.result?.home !== result.home || existing.result?.away !== result.away;
+          const etChanged = existing.result?.etHome !== result.etHome || existing.result?.etAway !== result.etAway;
+          const penChanged = existing.result?.penHome !== result.penHome || existing.result?.penAway !== result.penAway;
+          if (ftChanged || etChanged || penChanged) {
+            existing.result = result;
+            if (ftChanged) resultsFixed++;
           }
+          existing.goals1 = goals1;
+          existing.goals2 = goals2;
         }
-        if (result) { existing.goals1 = goals1; existing.goals2 = goals2; }
       } else {
         state.matches.push({
           id: 'm' + Date.now() + Math.random().toString(36).slice(2,6),
@@ -1123,6 +1510,7 @@ async function syncAll() {
       }
     });
 
+    // PASO 2: Eliminar placeholders y duplicados exactos
     tick();
     const beforeCount = state.matches.length;
     state.matches = state.matches.filter(m => !isPlaceholder(m.home) && !isPlaceholder(m.away));
@@ -1134,6 +1522,7 @@ async function syncAll() {
     });
     const removed = beforeCount - state.matches.length;
 
+    // PASO 3: Guardar y refrescar todo
     tick();
     await saveState();
     renderAdminMatches(); renderTabla(); renderStats(); renderMatches(); renderBracket();
@@ -1155,143 +1544,14 @@ async function syncAll() {
   }
 }
 
-async function importFixtures() { return syncAll(); }
-async function syncResults()    { return syncAll(); }
+// Aliases para compatibilidad
+async function importFixtures()          { return syncAll(); }
+async function syncResults()             { return syncAll(); }
+async function fixAndDeduplicateMatches(){ return syncAll(); }
 
-// ─── Render: Comparar ────────────────────────────────────────────────────────
-function renderComparar() {
-  const listEl = document.getElementById('comparar-list');
-  if (!listEl) return;
-
-  // Partidos por día (hoy por defecto)
-  populateCmpDates();
-  const dayFilter = document.getElementById('cmp-date-filter')?.value || 'all';
-  let matches = [...state.matches].sort((a, b) => new Date(a.datetime) - new Date(b.datetime));
-  if (dayFilter !== 'all') matches = matches.filter(m => m.datetime && dateInGT(m.datetime) === dayFilter);
-
-  if (matches.length === 0) {
-    listEl.innerHTML = '<div class="cmp-empty">No hay partidos para este día. Usa ‹ › para ver otro día.</div>';
-    return;
-  }
-
-  // Agrupados por estado: finalizados / en curso / pendientes
-  const groups = { done: [], live: [], pend: [] };
-  matches.forEach(m => {
-    if (m.result && m.result.home !== '') groups.done.push(m);
-    else if (isLocked(m)) groups.live.push(m);
-    else groups.pend.push(m);
-  });
-
-  const meta = {
-    done: { label: 'Finalizados', icon: 'ti-circle-check' },
-    live: { label: 'En curso',    icon: 'ti-ball-football' },
-    pend: { label: 'Pendientes',  icon: 'ti-clock' }
-  };
-  const order = ['done', 'live', 'pend'];
-  const firstVisible = order.find(k => groups[k].length);
-
-  let html = '';
-  order.forEach(key => {
-    const ms = groups[key];
-    if (!ms.length) return;
-    const open = key === 'done' || (!groups.done.length && key === firstVisible);
-    html += '<div class="cmp-group' + (open ? ' open' : '') + '" id="cmpg-' + key + '">'
-      + '<button class="cmp-group-head" onclick="toggleCmpGroup(\'' + key + '\')">'
-      + '<i class="ti ' + meta[key].icon + ' cmp-group-icon"></i>'
-      + '<span class="cmp-group-title">' + meta[key].label + '</span>'
-      + '<span class="cmp-group-count">' + ms.length + '</span>'
-      + '<i class="ti ti-chevron-down cmp-chev"></i>'
-      + '</button>'
-      + '<div class="cmp-group-wrap"><div class="cmp-group-body">'
-      + ms.map(cmpCard).join('')
-      + '</div></div></div>';
-  });
-
-  listEl.innerHTML = html;
-}
-
-// Tarjeta colapsable de un partido
-function cmpCard(m) {
-  const hasResult = m.result && m.result.home !== '';
-  const meId = state.currentUser?.id;
-
-  // Clasifica puntos al estilo Pitaya (exacto / acierta ganador+bonos / falla)
-  const badgeFor = pts => pts === state.points.exact ? 'badge-success' : pts > 0 ? 'badge-purple' : 'badge-danger';
-
-  // Ganadores (mayor puntuación)
-  let winnersHtml = '';
-  if (hasResult) {
-    const scored = state.users
-      .filter(u => pickSet(state.picks[u.id]?.[m.id]))
-      .map(u => ({ u, pts: calcPoints(u.id, m) }));
-    const max = scored.reduce((mx, s) => Math.max(mx, s.pts), 0);
-    const winners = max > 0 ? scored.filter(s => s.pts === max) : [];
-    winnersHtml = winners.length
-      ? winners.map(s => '<span class="cmp-win">🥇 ' + s.u.name.split(' ')[0]
-          + '<span class="badge-win">+' + s.pts + '</span></span>').join('')
-      : '<span class="cmp-noone">Nadie acertó este partido</span>';
-  }
-
-  // Mi predicción
-  const myPick = meId ? state.picks[meId]?.[m.id] : null;
-  const myHas = pickSet(myPick);
-  const myNp = normPick(myPick);
-  const myPts = hasResult && myHas ? calcPoints(meId, m) : null;
-  const mineStr = myHas
-    ? myNp.home + ' - ' + myNp.away + (myPts !== null ? ' <span class="cmp-mine-pts">(+' + myPts + ')</span>' : '')
-    : '<span class="cmp-noone">Sin predicción</span>';
-
-  // Detalle: todas las predicciones, ordenadas por puntos
-  const detailHtml = state.users
-    .map(u => {
-      const pk = state.picks[u.id]?.[m.id];
-      const has = pickSet(pk);
-      const np = normPick(pk);
-      const pts = hasResult && has ? calcPoints(u.id, m) : null;
-      return { u, has, np, pts };
-    })
-    .sort((a, b) => (b.pts ?? -1) - (a.pts ?? -1))
-    .map(r => {
-      const color = colorFor(r.u.name);
-      const pickStr = r.has ? r.np.home + '-' + r.np.away : '–';
-      const cls = r.pts !== null ? badgeFor(r.pts) : 'badge-gray';
-      return '<div class="cmp-pred' + (r.u.id === meId ? ' me' : '') + '">'
-        + '<span class="cmp-avatar" style="background:' + color + '30;color:' + color + '">' + initials(r.u.name) + '</span>'
-        + '<span class="cmp-pred-name">' + r.u.name.split(' ')[0] + '</span>'
-        + '<span class="cmp-pred-pick">' + pickStr + '</span>'
-        + '<span class="badge ' + cls + ' cmp-pred-badge">' + (r.pts !== null ? '+' + r.pts : '·') + '</span>'
-        + '</div>';
-    }).join('');
-
-  const pen = penWinner(m.result);
-  const penStr = pen && hasResult
-    ? ' <span style="font-size:11px;font-weight:500;color:var(--text-secondary)">(pen ' + m.result.penHome + '–' + m.result.penAway + ')</span>'
-    : '';
-  const center = hasResult
-    ? '<span class="cmp-score">' + m.result.home + ' - ' + m.result.away + penStr + '</span>'
-    : '<span class="cmp-vs">vs</span>';
-  const subline = hasResult
-    ? 'Resultado final'
-    : fmtDateShort(m.datetime) + ' · ' + fmtTime(m.datetime);
-
-  return '<div class="cmp-card" id="cmpc-' + m.id + '">'
-    + '<div class="cmp-fixture">'
-    +   '<span class="cmp-team home">' + m.home + ' ' + flagImg(m.home) + '</span>'
-    +   center
-    +   '<span class="cmp-team away">' + flagImg(m.away) + ' ' + m.away + '</span>'
-    + '</div>'
-    + '<div class="cmp-subline">' + subline + '</div>'
-    + (winnersHtml ? '<div class="cmp-winners">' + winnersHtml + '</div>' : '')
-    + '<div class="cmp-mine"><span class="cmp-mine-label">⭐ Tu predicción</span>'
-    +   '<span class="cmp-mine-val">' + mineStr + '</span></div>'
-    + '<button class="cmp-toggle" onclick="toggleCmpCard(\'' + m.id + '\')">'
-    +   '<span class="cmp-toggle-label"></span><i class="ti ti-chevron-down cmp-chev"></i>'
-    + '</button>'
-    + '<div class="cmp-detail-wrap"><div class="cmp-detail">' + detailHtml + '</div></div>'
-    + '</div>';
-}
-
-// ─── Verificar horarios contra openfootball ──────────────────────────────────
+// ─── Auditoría de horarios: compara cada partido guardado contra la fuente
+// oficial (openfootball) y muestra diferencias una por una para corregir
+// selectivamente, sin tener que correr una sincronización completa. ─────────
 async function verifySchedule() {
   const btn = document.getElementById('btn-verify-schedule');
   const out = document.getElementById('verify-schedule-output');
@@ -1305,7 +1565,7 @@ async function verifySchedule() {
     const data = await res.json();
     const matches = data.matches || [];
 
-    // Construir mapa source: "Home|Away" → datetime UTC
+    const pad = n => String(n).padStart(2, '0');
     const sourceMap = {};
     matches.forEach(m => {
       if (!m.team1 || !m.team2) return;
@@ -1318,7 +1578,6 @@ async function verifySchedule() {
       const [dy, dmo, dd] = m.date.split('-').map(Number);
       const utcMs = Date.UTC(dy, dmo - 1, dd, th, tm, 0) - tzOffset * 60 * 60 * 1000;
       const utcDate = new Date(utcMs);
-      const pad = n => String(n).padStart(2,'0');
       const utcISO = utcDate.getUTCFullYear() + '-'
         + pad(utcDate.getUTCMonth()+1) + '-'
         + pad(utcDate.getUTCDate()) + 'T'
@@ -1327,27 +1586,23 @@ async function verifySchedule() {
       sourceMap[m.team1 + '|' + m.team2] = { utcISO, rawTime: m.time, date: m.date };
     });
 
-    // Comparar contra partidos guardados
     let issues = [];
     let ok = 0;
     state.matches.forEach(m => {
       const key = m.home + '|' + m.away;
       const src = sourceMap[key];
-      if (!src) return; // partido no encontrado en source (ok, puede ser manual)
-      // Normalizar ambos a minutos UTC para comparar
+      if (!src) return;
       const savedDate  = new Date(m.datetime);
       const sourceDate = new Date(src.utcISO);
       const diffMin = Math.abs((savedDate.getTime() - sourceDate.getTime()) / 60000);
       if (diffMin > 1) {
-        // Convertir a hora Guatemala para mostrar
         const toGT = dt => {
           const d = new Date(new Date(dt).getTime() - 6*60*60*1000);
-          const pad = n => String(n).padStart(2,'0');
           return pad(d.getUTCHours()) + ':' + pad(d.getUTCMinutes());
         };
         issues.push({
           match: m,
-          savedGT:  toGT(m.datetime),
+          savedGT:   toGT(m.datetime),
           correctGT: toGT(src.utcISO),
           correctUTC: src.utcISO,
           diffMin
@@ -1365,7 +1620,7 @@ async function verifySchedule() {
         + '<i class="ti ti-alert-triangle"></i> ' + issues.length + ' partido(s) con horario incorrecto:</div>';
       issues.forEach(issue => {
         html += '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;padding:8px 10px;background:var(--bg-secondary);border-radius:var(--radius);margin-bottom:6px;font-size:13px">'
-          + '<span style="font-weight:600;flex:1;min-width:140px">' + issue.match.home + ' vs ' + issue.match.away + '</span>'
+          + '<span style="font-weight:700;flex:1;min-width:140px">' + issue.match.home + ' vs ' + issue.match.away + '</span>'
           + '<span style="color:var(--danger-text)">Guardado: ' + issue.savedGT + ' GT</span>'
           + '<span style="color:var(--text-secondary)">→</span>'
           + '<span style="color:var(--success-text)">Correcto: ' + issue.correctGT + ' GT</span>'
@@ -1519,6 +1774,10 @@ initFirebase().catch(err => {
     <p>Asegúrate de haber reemplazado los valores de Firebase en <code>app.js</code>. Ver <code>README.md</code>.</p>
   </div>`;
 });
+
+// Refresca el estado "en vivo" de los partidos cada minuto.
+setInterval(() => { if (state.currentUser && state.editingAs) renderMatches(); }, 60000);
+
 // ─── Bracket Mundial 2026 ────────────────────────────────────────────────────
 const BRACKET_STRUCTURE = {
   r32: [
@@ -1569,10 +1828,10 @@ function getWinnerOf(home, away) {
   if (isNaN(nh) || isNaN(na)) return null;
   if (nh > na) return m.home;
   if (na > nh) return m.away;
-  // Empate: desempate por penales
-  const pw = penWinner(m.result);
-  if (!pw) return null;
-  return pw === 'H' ? m.home : m.away;
+  // Empate en tiempo reglamentario: desempate por tiempo extra, luego penales
+  const decider = matchDecider(m.result);
+  if (!decider) return null; // aún sin capturar cómo se decidió el cruce
+  return decider === 'H' ? m.home : m.away;
 }
 
 function resolveBracket() {
@@ -1601,172 +1860,223 @@ function resolveBracket() {
   return { w32, w16, wQF, wSF, sfLosers, champion };
 }
 
-// ── Flag-only compact bracket ──
-function brFlag(team, isWinner, size) {
-  const c = team ? TEAM_FLAGS[team] : null;
-  // flagcdn.com only supports specific widths: 20, 40, 80, 160, 320...
-  if (c) {
-    return `<img src="https://flagcdn.com/w40/${c}.png" alt="${team}" title="${team}" loading="lazy"
-      class="brf${isWinner ? ' brf-win' : ''}">`;
-  }
-  return `<span class="brf brf-tbd"><i class="ti ti-star-filled"></i></span>`;
+// ── Bracket radial futurista ──
+// Orden angular de los 16 partidos de 16avos alrededor del círculo,
+// construido para que los pares consecutivos coincidan exactamente
+// con r16Pairs / qfPairs / sfPairs (ver BRACKET_STRUCTURE).
+const BR_CIRCLE_ORDER = [1,4,0,2,3,5,6,7,10,11,8,9,13,15,12,14];
+const BR_RADII = [392, 326, 258, 190, 122];
+const BR_NODE_SIZE = [15, 13.5, 12, 11, 10];
+const BR_SPIN_DUR = 60; // segundos por vuelta completa del circuito
+
+function brAngleAt(level, idx) {
+  if (level === 0) return -90 + idx * (360 / 32);
+  const a1 = brAngleAt(level - 1, idx * 2);
+  const a2 = brAngleAt(level - 1, idx * 2 + 1);
+  return (a1 + a2) / 2;
+}
+function brPos(level, idx) {
+  const a = brAngleAt(level, idx) * Math.PI / 180;
+  const r = BR_RADII[level];
+  return { x: r * Math.cos(a), y: r * Math.sin(a) };
 }
 
-function brMatch(homeTeam, awayTeam, winner, isVertical) {
-  const hW = winner && winner === homeTeam;
-  const aW = winner && winner === awayTeam;
-  return `<div class="brm${isVertical ? ' brm-v' : ''}">
-    <div class="brm-team${hW ? ' brm-w' : ''}">${brFlag(homeTeam, hW, 28)}</div>
-    <div class="brm-team${aW ? ' brm-w' : ''}">${brFlag(awayTeam, aW, 28)}</div>
-  </div>`;
+let brClipSeq = 0;
+// Solo dibuja un nodo cuando ya se conoce el equipo — nada de círculos
+// grises de "por definir" en los niveles todavía sin resolver.
+function brRadialFlag(team, x, y, r, out) {
+  if (!team) return '';
+  const gx = x.toFixed(1), gy = y.toFixed(1);
+  const code = TEAM_FLAGS[team];
+  if (!code) {
+    return `<g transform="translate(${gx},${gy})" class="brw-node">
+      <g class="brw-node-hover">
+        <circle r="${r}" class="brw-node-ring"/>
+        <text class="brw-node-q" x="0" y="1" text-anchor="middle" dominant-baseline="central">?</text>
+      </g>
+      <title>${team}</title>
+    </g>`;
+  }
+  brClipSeq++;
+  const cid = 'brwclip' + brClipSeq;
+  const d = r * 2 - 2.4;
+  return `<g transform="translate(${gx},${gy})" class="brw-node${out ? ' brw-node-out' : ''}">
+    <g class="brw-node-spin">
+      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="-360 0 0" dur="${BR_SPIN_DUR}s" repeatCount="indefinite"/>
+      <g class="brw-node-hover">
+        <clipPath id="${cid}"><circle r="${(r - 1.2).toFixed(1)}"/></clipPath>
+        <circle r="${r}" class="brw-node-ring${out ? ' brw-node-ring-out' : ''}"/>
+        <image href="https://flagcdn.com/w80/${code}.png" x="${(-d / 2).toFixed(1)}" y="${(-d * 0.72 / 2).toFixed(1)}"
+          width="${d.toFixed(1)}" height="${(d * 0.72).toFixed(1)}" clip-path="url(#${cid})"
+          preserveAspectRatio="xMidYMid slice" class="brw-flagimg"/>
+      </g>
+    </g>
+    <title>${team}</title>
+  </g>`;
+}
+
+// Secuencia de luz por tramo (7s en total, siempre de afuera hacia adentro):
+//  0-2s  → se dibuja de afuera hacia adentro, de tenue a brillante
+//  2-5s  → línea completa encendida y parpadeando
+//  5-7s  → se apaga de afuera hacia adentro, de brillante a tenue
+const BR_EDGE_CYCLE = 7;
+const BR_DASH_KT = "0;0.28571;0.71429;1";
+const BR_OPACITY_KT = "0;0.28571;0.33929;0.39286;0.44643;0.5;0.55357;0.60714;0.66071;0.71429;1";
+const BR_OPACITY_VALS = "0.15;1;0.55;1;0.55;1;0.55;1;0.55;1;0.15";
+
+function brRadialEdge(x1, y1, x2, y2, alive, delay) {
+  const a = [x1.toFixed(1), y1.toFixed(1), x2.toFixed(1), y2.toFixed(1)];
+  if (alive) {
+    const len = Math.hypot(x2 - x1, y2 - y1);
+    const lenF = len.toFixed(1);
+    const beginAt = (delay || 0).toFixed(2);
+    const dashVals = `${lenF};0;0;${(-len).toFixed(1)}`;
+    const dashAnim = `<animate attributeName="stroke-dashoffset" values="${dashVals}" keyTimes="${BR_DASH_KT}" dur="${BR_EDGE_CYCLE}s" begin="${beginAt}s" repeatCount="indefinite" calcMode="linear"/>`;
+    const opacityAnim = `<animate attributeName="opacity" values="${BR_OPACITY_VALS}" keyTimes="${BR_OPACITY_KT}" dur="${BR_EDGE_CYCLE}s" begin="${beginAt}s" repeatCount="indefinite" calcMode="linear"/>`;
+    return `<g>
+      ${opacityAnim}
+      <line x1="${a[0]}" y1="${a[1]}" x2="${a[2]}" y2="${a[3]}" class="brw-edge-glow" stroke-dasharray="${lenF} ${lenF}" stroke-dashoffset="${lenF}">${dashAnim}</line>
+      <line x1="${a[0]}" y1="${a[1]}" x2="${a[2]}" y2="${a[3]}" class="brw-edge-core" stroke-dasharray="${lenF} ${lenF}" stroke-dashoffset="${lenF}">${dashAnim}</line>
+    </g>`;
+  }
+  return `<line x1="${a[0]}" y1="${a[1]}" x2="${a[2]}" y2="${a[3]}" class="brw-edge"/>`;
+}
+
+function buildRadialBracket() {
+  const { w32, w16, wQF, wSF, champion } = resolveBracket();
+  const r32 = BRACKET_STRUCTURE.r32;
+  const order = BR_CIRCLE_ORDER;
+
+  const L0 = [];
+  for (let p = 0; p < 32; p++) {
+    const s = Math.floor(p / 2);
+    const mi = order[s];
+    const isHome = p % 2 === 0;
+    const team = isHome ? r32[mi].home : r32[mi].away;
+    const winner = w32[mi];
+    const { x, y } = brPos(0, p);
+    L0.push({ x, y, team, out: !!(winner && team && winner !== team) });
+  }
+  const L1 = [];
+  for (let s = 0; s < 16; s++) {
+    const mi = order[s];
+    const team = w32[mi];
+    const t = Math.floor(s / 2);
+    const winner = w16[t];
+    const { x, y } = brPos(1, s);
+    L1.push({ x, y, team, out: !!(winner && team && winner !== team) });
+  }
+  const L2 = [];
+  for (let t = 0; t < 8; t++) {
+    const team = w16[t];
+    const q = Math.floor(t / 2);
+    const winner = wQF[q];
+    const { x, y } = brPos(2, t);
+    L2.push({ x, y, team, out: !!(winner && team && winner !== team) });
+  }
+  const L3 = [];
+  for (let q = 0; q < 4; q++) {
+    const team = wQF[q];
+    const f = Math.floor(q / 2);
+    const winner = wSF[f];
+    const { x, y } = brPos(3, q);
+    L3.push({ x, y, team, out: !!(winner && team && winner !== team) });
+  }
+  const L4 = [];
+  for (let f = 0; f < 2; f++) {
+    const team = wSF[f];
+    const { x, y } = brPos(4, f);
+    L4.push({ x, y, team, out: !!(champion && team && champion !== team) });
+  }
+
+  const edges = [];
+  function link(childArr, parentArr, level) {
+    for (let p = 0; p < parentArr.length; p++) {
+      const c0 = childArr[p * 2], c1 = childArr[p * 2 + 1];
+      const par = parentArr[p];
+      [c0, c1].forEach(c => {
+        edges.push({
+          x1: c.x, y1: c.y, x2: par.x, y2: par.y,
+          alive: !!(c.team && par.team && c.team === par.team),
+          delay: level * 1.0,
+        });
+      });
+    }
+  }
+  link(L0, L1, 0); link(L1, L2, 1); link(L2, L3, 2); link(L3, L4, 3);
+  [L4[0], L4[1]].forEach(c => {
+    edges.push({ x1: c.x, y1: c.y, x2: 0, y2: 0, alive: !!(c.team && champion && c.team === champion), delay: 4 * 1.0 });
+  });
+
+  return { levels: [L0, L1, L2, L3, L4], edges, champion };
+}
+
+// Trofeo oficial (imagen provista por el usuario, recortada al trofeo).
+// El centro nunca gira: es el eje fijo alrededor del cual gira el circuito.
+function brTrophyIcon() {
+  return `<clipPath id="brwTrophyClip"><rect x="-24" y="-38" width="48" height="76" rx="6"/></clipPath>
+  <image href="trophy-fifa26.png" x="-24" y="-38" width="48" height="76" clip-path="url(#brwTrophyClip)" preserveAspectRatio="xMidYMid slice"/>`;
 }
 
 function renderBracket() {
   const el = document.getElementById('tab-bracket');
   if (!el || el.classList.contains('hidden')) return;
 
-  const { w32, w16, wQF, wSF, sfLosers, champion } = resolveBracket();
-  const r32 = BRACKET_STRUCTURE.r32;
-  const r16p = BRACKET_STRUCTURE.r16Pairs;
-  const qfp  = BRACKET_STRUCTURE.qfPairs;
-  const sfp  = BRACKET_STRUCTURE.sfPairs;
+  const { levels, edges, champion } = buildRadialBracket();
 
-  // Build team pairs for each round
-  const r16t = r16p.map(([a,b]) => ({ home: w32[a], away: w32[b] }));
-  const qft  = qfp.map(([a,b])  => ({ home: w16[a], away: w16[b] }));
-  const sft  = sfp.map(([a,b])  => ({ home: wQF[a], away: wQF[b] }));
+  let nodesSvg = '';
+  levels.forEach((arr, lvl) => {
+    arr.forEach(n => { nodesSvg += brRadialFlag(n.team, n.x, n.y, BR_NODE_SIZE[lvl], n.out); });
+  });
 
-  // Left side: indices 0-3 from each round
-  // Layout: 8 r32 → 4 r16 → 2 qf → 1 sf → center
-  function col(items) {
-    return `<div class="brcol">${items.join('')}</div>`;
-  }
-  function spacer() { return '<div class="brspc"></div>'; }
+  let edgesSvg = '';
+  edges.forEach(e => { edgesSvg += brRadialEdge(e.x1, e.y1, e.x2, e.y2, e.alive, e.delay); });
 
-  // Champion flag
-  const champC = champion ? TEAM_FLAGS[champion] : null;
-  const champFlag = champC
-    ? `<img src="https://flagcdn.com/w80/${champC}.png" alt="${champion}" title="${champion}" class="br-champ-flag">`
-    : `<span class="br-champ-tbd"><i class="ti ti-trophy"></i></span>`;
+  const spokes = Array.from({ length: 16 }, (_, i) => {
+    const a = (-90 + i * (360 / 16)) * Math.PI / 180;
+    const x2 = (392 * Math.cos(a)).toFixed(1), y2 = (392 * Math.sin(a)).toFixed(1);
+    return `<line x1="0" y1="0" x2="${x2}" y2="${y2}" class="brw-spoke"/>`;
+  }).join('');
 
-  // 3rd place
-  const tp1 = sfLosers[0], tp2 = sfLosers[1];
-  const tpW = (tp1 && tp2) ? getWinnerOf(tp1, tp2) : null;
-
-  // Build columns — left side (r32 idx 0-7, r16 idx 0-3, qf idx 0-1, sf idx 0)
-  const leftR32 = [
-    brMatch(r32[1].home, r32[1].away, w32[1]),
-    brMatch(r32[4].home, r32[4].away, w32[4]),
-    spacer(),
-    brMatch(r32[0].home, r32[0].away, w32[0]),
-    brMatch(r32[2].home, r32[2].away, w32[2]),
-    spacer(),
-    brMatch(r32[3].home, r32[3].away, w32[3]),
-    brMatch(r32[5].home, r32[5].away, w32[5]),
-    spacer(),
-    brMatch(r32[6].home, r32[6].away, w32[6]),
-    brMatch(r32[7].home, r32[7].away, w32[7]),
-  ];
-  const leftR16 = [
-    brMatch(r16t[0].home, r16t[0].away, w16[0]),
-    spacer(), spacer(),
-    brMatch(r16t[1].home, r16t[1].away, w16[1]),
-    spacer(), spacer(),
-    brMatch(r16t[2].home, r16t[2].away, w16[2]),
-    spacer(), spacer(),
-    brMatch(r16t[3].home, r16t[3].away, w16[3]),
-  ];
-  const leftQF = [
-    spacer(),
-    brMatch(qft[0].home, qft[0].away, wQF[0]),
-    spacer(), spacer(), spacer(),
-    brMatch(qft[1].home, qft[1].away, wQF[1]),
-    spacer(),
-  ];
-  const leftSF = [
-    spacer(), spacer(),
-    brMatch(sft[0].home, sft[0].away, wSF[0]),
-    spacer(), spacer(),
-  ];
-
-  // Right side (mirrored)
-  const rightR32 = [
-    brMatch(r32[10].home, r32[10].away, w32[10]),
-    brMatch(r32[11].home, r32[11].away, w32[11]),
-    spacer(),
-    brMatch(r32[8].home,  r32[8].away,  w32[8]),
-    brMatch(r32[9].home,  r32[9].away,  w32[9]),
-    spacer(),
-    brMatch(r32[13].home, r32[13].away, w32[13]),
-    brMatch(r32[15].home, r32[15].away, w32[15]),
-    spacer(),
-    brMatch(r32[12].home, r32[12].away, w32[12]),
-    brMatch(r32[14].home, r32[14].away, w32[14]),
-  ];
-  const rightR16 = [
-    brMatch(r16t[4].home, r16t[4].away, w16[4]),
-    spacer(), spacer(),
-    brMatch(r16t[5].home, r16t[5].away, w16[5]),
-    spacer(), spacer(),
-    brMatch(r16t[6].home, r16t[6].away, w16[6]),
-    spacer(), spacer(),
-    brMatch(r16t[7].home, r16t[7].away, w16[7]),
-  ];
-  const rightQF = [
-    spacer(),
-    brMatch(qft[2].home, qft[2].away, wQF[2]),
-    spacer(), spacer(), spacer(),
-    brMatch(qft[3].home, qft[3].away, wQF[3]),
-    spacer(),
-  ];
-  const rightSF = [
-    spacer(), spacer(),
-    brMatch(sft[1].home, sft[1].away, wSF[1]),
-    spacer(), spacer(),
-  ];
+  const champCode = champion ? TEAM_FLAGS[champion] : null;
+  const champCenter = champCode
+    ? `<clipPath id="brwChampClip"><circle r="30" cx="0" cy="-2"/></clipPath>
+       <image href="https://flagcdn.com/w80/${champCode}.png" x="-30" y="-30" width="60" height="43.2" clip-path="url(#brwChampClip)" preserveAspectRatio="xMidYMid slice"/>`
+    : brTrophyIcon();
 
   el.innerHTML = `
   <div class="brwrap">
     <div class="brtitle"><i class="ti ti-trophy"></i> Bracket Mundial 2026</div>
-    <div class="brscroll">
-      <div class="brgrid">
-        <div class="brhdr">16avos</div>
-        <div class="brhdr">8vos</div>
-        <div class="brhdr">Cuartos</div>
-        <div class="brhdr">Semi</div>
-        <div class="brhdr"></div>
-        <div class="brhdr">Semi</div>
-        <div class="brhdr">Cuartos</div>
-        <div class="brhdr">8vos</div>
-        <div class="brhdr">16avos</div>
-
-        ${col(leftR32)}
-        ${col(leftR16)}
-        ${col(leftQF)}
-        ${col(leftSF)}
-
-        <div class="brcenter">
-          <div class="br-champion">
-            ${champFlag}
-            <div class="br-champ-label">🏆 Campeón</div>
-            <div class="br-champ-name">${champion || '?'}</div>
-          </div>
-          <div class="br-third-wrap">
-            <div class="br-third-label">🥉 3er lugar</div>
-            <div class="br-third-flags">
-              ${brFlag(tp1, tpW===tp1, 32)}
-              <span class="br-third-vs">vs</span>
-              ${brFlag(tp2, tpW===tp2, 32)}
-            </div>
-          </div>
-        </div>
-
-        ${col(rightSF)}
-        ${col(rightQF)}
-        ${col(rightR16)}
-        ${col(rightR32)}
-      </div>
+    <div class="brw-stage">
+      <svg viewBox="-430 -430 860 860" class="brw-svg" preserveAspectRatio="xMidYMid meet">
+        <defs>
+          <radialGradient id="brwCenterGlow" gradientUnits="userSpaceOnUse" cx="0" cy="0" r="72">
+            <animate attributeName="fx" values="-28;24;18;-30;-28" dur="7s" repeatCount="indefinite"/>
+            <animate attributeName="fy" values="-22;12;28;-14;-22" dur="7s" repeatCount="indefinite"/>
+            <stop offset="0%" stop-color="#fff6da" stop-opacity=".95"/>
+            <stop offset="45%" stop-color="#ffcf4d" stop-opacity=".5"/>
+            <stop offset="100%" stop-color="#ffcf4d" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <circle r="392" class="brw-ring"/>
+        <circle r="326" class="brw-ring"/>
+        <circle r="258" class="brw-ring"/>
+        <circle r="190" class="brw-ring"/>
+        <circle r="122" class="brw-ring"/>
+        ${spokes}
+        <g class="brw-rotor">
+          <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="${BR_SPIN_DUR}s" repeatCount="indefinite"/>
+          ${edgesSvg}
+          ${nodesSvg}
+        </g>
+        <g class="brw-center">
+          <circle r="72" class="brw-center-glow" fill="url(#brwCenterGlow)"/>
+          <circle r="40" class="brw-center-disc"/>
+          ${champCenter}
+        </g>
+      </svg>
     </div>
+    ${champion ? `<div class="brw-champ-caption"><i class="ti ti-trophy"></i> Campeón: <strong>${champion}</strong></div>` : ''}
     <p class="br-note"><i class="ti ti-info-circle"></i> Se actualiza automáticamente con los resultados oficiales.</p>
   </div>`;
 }

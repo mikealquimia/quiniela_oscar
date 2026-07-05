@@ -1,105 +1,91 @@
-# 🏆 Quiniela Mundial 2026
+# 🎉 Quiniela Mundialista · Mundial 2026
 
-Aplicación web para llevar la quiniela de tu empresa. Todos comparten los mismos datos en tiempo real.
-
----
-
-## Paso 1 — Crear base de datos gratuita en Firebase
-
-Los datos de todos los participantes se guardan en Firebase (gratis, de Google).
-
-1. Ve a https://console.firebase.google.com
-2. Haz clic en **"Agregar proyecto"**
-3. Nombre del proyecto: `quiniela-2026` (o el que quieras)
-4. Desactiva Google Analytics (no es necesario) → **Crear proyecto**
-5. En el menú izquierdo ve a **Firestore Database** → **Crear base de datos**
-   - Elige **"Comenzar en modo de prueba"** → Siguiente → Selecciona tu región → Listo
-6. En el menú izquierdo ve a **Configuración del proyecto** (ícono de engranaje ⚙️)
-7. Baja hasta **"Tus apps"** → clic en el ícono **`</>`** (web)
-8. Registra la app con el nombre `quiniela-web` → **Registrar app**
-9. Copia el objeto `firebaseConfig` que aparece, se ve así:
-
-```js
-const firebaseConfig = {
-  apiKey: "AIzaSy...",
-  authDomain: "quiniela-2026.firebaseapp.com",
-  projectId: "quiniela-2026",
-  storageBucket: "quiniela-2026.appspot.com",
-  messagingSenderId: "123456789",
-  appId: "1:123456789:web:abc123"
-};
-```
+Versión **actualizada** de tu quiniela: tu `quiniela_oscar` estaba corriendo
+sobre una versión bastante más antigua del motor (parecida a como estaba
+`quiniela_familia` antes de mejorarla). Este paquete la pone al día con
+exactamente las mismas mejoras — motor, funciones nuevas y diseño — que ya
+tiene `quiniela_familia`, pero conectada a **tu propio proyecto Firebase**
+(`quiniela-oscar`), así que tus usuarios, PINs y datos guardados siguen
+intactos.
 
 ---
 
-## Paso 2 — Pegar tu config en el código
+## Qué le hacía falta a quiniela_oscar (y ya se agregó)
 
-Abre el archivo `app.js` y busca la sección al inicio:
+### 1. Bracket
+Tenías el bracket viejo (columnas simples, sin animación). Ahora tiene el
+bracket radial animado: banderas por equipo, iluminación de ronda en ronda y
+el campeón en el centro cuando se define. Además, en esta entrega el bracket
+ocupa toda la pantalla en su pestaña en vez de un espacio angosto.
 
-```js
-const FIREBASE_CONFIG = {
-  apiKey: "REEMPLAZA_ESTO",
-  ...
-};
-```
+### 2. Motor de puntos — arreglos importantes
+- **Tiempo extra**: tu versión anterior solo guardaba el marcador reglamentario
+  (90'). Si un cruce se definía en tiempo extra sin ir a penales (como
+  Argentina 3-2 Cabo Verde este Mundial), lo registraba como empate y no
+  sabía quién avanzaba. Ahora se captura el marcador de tiempo extra y se usa,
+  junto con los penales, para decidir correctamente quién gana el cruce.
+- **Puntos por acertar el ganador en penales o tiempo extra**: si predijiste
+  que un equipo ganaba y ese equipo avanzó por penales o tiempo extra
+  (aunque el marcador reglamentario haya sido empate), ahora sí te suma los
+  puntos de "ganador acertado".
+- **Ventana de "en vivo"**: se extendió de 2 a 2h40 para no marcar un partido
+  como "Final" antes de que termine el tiempo extra y los penales.
+- **Goleadores**: ahora se muestran debajo de cada partido jugado.
 
-Reemplaza **cada valor** con los que copiaste de Firebase. Guarda el archivo.
+### 3. Función nueva — pronóstico de penales
+Si tu pronóstico es un empate, puedes elegir quién crees que avanza en
+penales. Si aciertas, ganas **+1 punto extra**.
 
----
+### 4. Herramientas de Admin
+- **Sincronizar**: un solo botón trae calendario, resultados (incluyendo
+  tiempo extra y penales), goleadores, y corrige horarios/fases — gratis,
+  sin necesidad de ninguna API key, desde openfootball.
+- **Verificar horarios**: compara cada partido guardado contra la fuente
+  oficial y te deja corregir uno por uno si algo no cuadra.
+- **Marcador en vivo (opcional)**: si además quieres marcador minuto a
+  minuto, puedes conectar una API key gratuita de API-Football desde Admin.
+  A diferencia de tu versión anterior (donde la key quedaba escrita en texto
+  plano dentro de `app.js`), ahora se guarda solo en tu navegador y las
+  llamadas pasan por una función serverless (`api/resultados.js`) para que la
+  key nunca quede expuesta en el código fuente.
 
-## Paso 3 — Subir a GitHub
+### 5. Diseño — rediseño completo, desde el login
+Se reemplazó el diseño anterior (fondo con marca de agua, tipografía básica)
+por una identidad nueva tipo "boleto de lotería": tipografía cálida (Fraunces
++ Manrope + JetBrains Mono para los marcadores), paleta marigold/berry, y un
+listón de papel picado animado en el login. El bracket mantiene un fondo
+oscuro de "noche de estadio" a propósito — es el único lugar con ese
+contraste, el resto de la app es cálido y de día.
 
-1. Ve a https://github.com → **"New repository"**
-2. Nombre: `quiniela-2026` → **Create repository**
-3. Sube los 3 archivos: `index.html`, `style.css`, `app.js`
-   - Clic en **"uploading an existing file"**
-   - Arrastra los 3 archivos → **Commit changes**
-
----
-
-## Paso 4 — Publicar en Vercel (gratis)
-
-1. Ve a https://vercel.com → **"Sign up"** con tu cuenta de GitHub
-2. Clic en **"Add New Project"**
-3. Selecciona el repositorio `quiniela-2026` → **Deploy**
-4. ¡Listo! En 30 segundos tendrás una URL tipo `quiniela-2026.vercel.app`
-
-Comparte esa URL con todos tus compañeros y ya pueden entrar desde cualquier computadora o celular.
-
----
-
-## Paso 5 — Primer uso
-
-1. Entra a la app con la URL de Vercel
-2. Como no hay usuarios todavía, primero necesitas crearte como admin.
-   - **Truco para el primer usuario:** abre `app.js`, busca la función `initFirebase()` y agrega esto al final antes del cierre `}`:
-   ```js
-   // Solo para el primer usuario — borra esto después
-   // Descomenta la línea de abajo, guarda, sube el archivo, entra a la app, luego bórrala
-   // state.users.push({ id: 'admin1', name: 'TuNombre', isAdmin: true }); await saveState();
-   ```
-   - O más fácil: en la consola del navegador (F12 → Console) pega:
-   ```js
-   // Abre la consola en la página de la quiniela y pega esto:
-   state.users.push({ id: 'admin1', name: 'TuNombre', isAdmin: true });
-   saveState().then(() => location.reload());
-   ```
-3. Recarga la página, selecciona tu nombre, entra y desde el panel **Admin** agrega a todos.
+Se dejó el nombre **Quiniela Mundialista** que ya usabas (no "Familia"); si
+quieres otro nombre es un cambio de una línea en `index.html` (buscá
+`Mundialista` y reemplazalo donde aparezca).
 
 ---
 
-## Actualizar la app
+## Publicar los cambios
 
-Si haces cambios al código, sube los archivos modificados a GitHub y Vercel los publica automáticamente.
+1. Sube estos archivos a tu repositorio de GitHub existente de
+   `quiniela_oscar` (los mismos nombres: `index.html`, `style.css`, `app.js`,
+   y ahora también la carpeta `api/` y `vercel.json` si no la tenías ya).
+2. Vercel vuelve a desplegar automáticamente en cuanto detecta el cambio.
+3. No hace falta ningún truco de "primer usuario" — tus usuarios y PINs
+   existentes siguen ahí porque los datos viven en tu Firestore
+   (`quiniela-oscar`), no en el código.
+4. Dale un clic a **Sincronizar** en Admin una vez publicado, para que los
+   partidos que ya se jugaron en tiempo extra (como Argentina vs Cabo Verde)
+   se corrijan solos.
 
 ---
 
 ## Estructura de archivos
 
 ```
-quiniela/
-├── index.html   — estructura de la página
-├── style.css    — estilos y diseño
-├── app.js       — lógica y conexión a Firebase
-└── README.md    — esta guía
+quiniela_oscar/
+├── index.html         — estructura de la página (nuevo diseño)
+├── style.css           — identidad visual nueva, completa
+├── app.js               — motor de quiniela + funciones nuevas
+├── api/resultados.js  — proxy serverless opcional para marcador en vivo
+├── vercel.json          — configuración de rutas para el proxy
+└── README.md            — esta guía
 ```
