@@ -302,6 +302,35 @@ function clearPin() {
   document.getElementById("pin-0").focus();
 }
 
+// Sonido sutil de confirmación al entrar — un pequeño "ding" sintetizado,
+// nada de archivos de audio, para no depender de nada externo.
+let _loginAudioCtx = null;
+function playLoginChime() {
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return;
+    if (!_loginAudioCtx) _loginAudioCtx = new Ctx();
+    const ctx = _loginAudioCtx;
+    if (ctx.state === 'suspended') ctx.resume();
+    const now = ctx.currentTime;
+    const notes = [660, 880]; // intervalo cálido, tipo "sello de boleto aprobado"
+    notes.forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      const start = now + i * 0.1;
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.14, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, start + 0.38);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.4);
+    });
+  } catch (e) { /* si el navegador bloquea audio, seguimos sin sonido */ }
+}
+
 function doLogin() {
   const id = document.getElementById('login-select').value;
   if (!id) { alert('Selecciona tu nombre'); return; }
@@ -319,10 +348,10 @@ function doLogin() {
   document.getElementById('pin-error').classList.add('hidden');
   [0,1,2,3].forEach(i => document.getElementById('pin-'+i).classList.remove('error'));
 
+  playLoginChime();
+
   state.currentUser = user;
   state.editingAs = user;
-  document.getElementById('screen-login').classList.add('hidden');
-  document.getElementById('screen-main').classList.remove('hidden');
 
   const av = document.getElementById('user-avatar');
   av.textContent = initials(user.name);
@@ -344,7 +373,35 @@ function doLogin() {
   const elResult2 = document.getElementById('pts-result');
   if (elExact2)  elExact2.value  = state.points.exact;
   if (elResult2) elResult2.value = state.points.result;
+
+  // Preparamos todo el contenido de "Mi quiniela" ANTES de mostrarlo, para
+  // que la transición revele las tarjetas ya listas, sin parpadeo.
   refreshAll();
+  transitionToMain();
+}
+
+// Anima la salida del boleto de login y la entrada escalonada de la
+// quiniela (header → tabs → tarjetas de partidos), como si el boleto se
+// abriera para mostrar el contenido de adentro.
+function transitionToMain() {
+  const loginEl = document.getElementById('screen-login');
+  const mainEl  = document.getElementById('screen-main');
+  const prefersNoMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  if (prefersNoMotion) {
+    loginEl.classList.add('hidden');
+    mainEl.classList.remove('hidden');
+    return;
+  }
+
+  loginEl.classList.add('login-exit');
+  setTimeout(() => {
+    loginEl.classList.add('hidden');
+    loginEl.classList.remove('login-exit');
+    mainEl.classList.remove('hidden');
+    mainEl.classList.add('main-enter');
+    setTimeout(() => mainEl.classList.remove('main-enter'), 950);
+  }, 560);
 }
 
 function doLogout() {
@@ -354,7 +411,7 @@ function doLogout() {
   document.getElementById('screen-login').classList.remove('hidden');
   document.getElementById('screen-main').classList.add('hidden');
   document.querySelectorAll('.tab').forEach((t, i) => t.classList.toggle('active', i === 0));
-  ['tab-quiniela','tab-tabla','tab-stats','tab-admin'].forEach((id, i) => {
+  ['tab-quiniela','tab-tabla','tab-admin'].forEach((id, i) => {
     document.getElementById(id).classList.toggle('hidden', i !== 0);
   });
 }
@@ -363,10 +420,10 @@ function refreshAll() {
   renderMyStats();
   renderMatches();
   renderTabla();
-  renderStats();
   renderComparar();
   renderAdminMatches();
   renderAdminUsers();
+  renderAdminHealth();
   renderBracket();
   const elExact  = document.getElementById('pts-exact');
   const elResult = document.getElementById('pts-result');
@@ -377,15 +434,63 @@ function refreshAll() {
 }
 
 // ─── Tabs ────────────────────────────────────────────────────────────────────
-function showTab(id, btn) {
-  ['tab-quiniela','tab-tabla','tab-stats','tab-comparar','tab-admin','tab-bracket'].forEach(t => {
-    document.getElementById(t).classList.add('hidden');
+const TAB_IDS = ['tab-quiniela','tab-tabla','tab-comparar','tab-admin','tab-bracket'];
+
+// Anima los hijos directos de un tab-content en línea recta horizontal —
+// cada uno con distancia/dirección aleatoria — sin giro y sin desvanecerse.
+function randomizePieces(container, cls) {
+  const kids = Array.from(container.children);
+  kids.forEach(k => {
+    const dir = Math.random() < 0.5 ? -1 : 1;
+    const dist = 14 + Math.random() * 22; // px — sutil, no invade el layout
+    k.style.setProperty('--tx', (dir * dist).toFixed(0) + 'px');
+    k.style.animationDelay = (Math.random() * 60).toFixed(0) + 'ms';
+    k.classList.add(cls);
   });
-  document.getElementById(id).classList.remove('hidden');
+  return kids;
+}
+function clearPieces(kids, cls) {
+  kids.forEach(k => {
+    k.classList.remove(cls);
+    k.style.removeProperty('--tx');
+    k.style.removeProperty('animation-delay');
+  });
+}
+
+function showTab(id, btn) {
+  const currentId = TAB_IDS.find(t => !document.getElementById(t).classList.contains('hidden'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
   if (btn) btn.classList.add('active');
-  if (id === 'tab-comparar') renderComparar();
-  if (id === 'tab-bracket') renderBracket();
+
+  const finish = () => {
+    if (id === 'tab-comparar') renderComparar();
+    if (id === 'tab-bracket') renderBracket();
+    if (id === 'tab-admin') renderAdminHealth();
+  };
+
+  const currentEl = currentId ? document.getElementById(currentId) : null;
+  const nextEl = document.getElementById(id);
+  const prefersNoMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  if (!currentEl || currentId === id || prefersNoMotion) {
+    TAB_IDS.forEach(t => document.getElementById(t).classList.add('hidden'));
+    nextEl.classList.remove('hidden');
+    finish();
+    return;
+  }
+
+  // Salida y entrada arrancan al mismo tiempo — sin espacio en blanco entre ellas.
+  const exiting = randomizePieces(currentEl, 'cuadrito-exit');
+  nextEl.classList.remove('hidden');
+  const entering = randomizePieces(nextEl, 'cuadrito-enter');
+  finish();
+
+  setTimeout(() => {
+    clearPieces(exiting, 'cuadrito-exit');
+    clearPieces(entering, 'cuadrito-enter');
+    currentEl.classList.add('hidden');
+    TAB_IDS.filter(t => t !== id).forEach(t => document.getElementById(t).classList.add('hidden'));
+  }, 340);
 }
 function toggleCmpCard(id)  { document.getElementById('cmpc-' + id)?.classList.toggle('open'); }
 function toggleCmpGroup(key) { document.getElementById('cmpg-' + key)?.classList.toggle('open'); }
@@ -587,6 +692,7 @@ function renderMyStats() {
   if (!grid || !state.currentUser) return;
   const u = state.currentUser;
   let pts = 0, exact = 0, winner = 0, played = 0, pending = 0;
+  let potential = 0, missingPicks = 0;
   state.matches.forEach(m => {
     const mFinished = isFinished(m);
     const mLive = isLive(m);
@@ -598,6 +704,12 @@ function renderMyStats() {
       else if (p > 0) winner++;
     } else {
       pending++;
+      // Techo de puntos que todavía podés ganar: si ya picaste el partido,
+      // lo mejor que te puede tocar es el marcador exacto; si no lo has
+      // picado, ese punto potencial todavía está en tus manos.
+      const pk = state.picks[u.id]?.[m.id];
+      if (pickSet(pk)) potential += state.points.exact;
+      else missingPicks++;
     }
   });
   const color = colorFor(u.name);
@@ -614,9 +726,15 @@ function renderMyStats() {
       <div class="stat-label">Ganador acertado</div>
       <div class="stat-value" style="color:var(--info, #3b82f6)">${winner}</div>
     </div>
+    <div class="stat-card" style="border-left:3px solid var(--accent)">
+      <div class="stat-label">🚀 Puntos en juego</div>
+      <div class="stat-value" style="color:var(--accent)">+${potential}</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">si le atinás a todo lo que falta</div>
+    </div>
     <div class="stat-card" style="border-left:3px solid var(--text-secondary)">
       <div class="stat-label">Por jugar</div>
       <div class="stat-value">${pending}</div>
+      ${missingPicks > 0 ? `<div style="font-size:11px;color:var(--danger-text);margin-top:2px">⚠️ te faltan ${missingPicks} por pronosticar</div>` : ''}
     </div>
   `;
 }
@@ -849,6 +967,27 @@ async function setPenPick(userId, matchId, side) {
 }
 
 
+// Consenso del grupo para un partido: el marcador (o resultado H/A/D) que más
+// gente pronosticó. Si no hay un pronóstico claramente mayoritario (empate
+// entre dos opciones, o menos de 2 personas picaron), devuelve null — no
+// tiene sentido hablar de "consenso" ahí.
+function getGroupConsensus(matchId) {
+  const counts = {};
+  let totalPickers = 0;
+  state.users.forEach(u => {
+    const pk = state.picks[u.id]?.[matchId];
+    if (!pickSet(pk)) return;
+    totalPickers++;
+    const np = normPick(pk);
+    const res = +np.home > +np.away ? 'H' : +np.home < +np.away ? 'A' : 'D';
+    counts[res] = (counts[res] || 0) + 1;
+  });
+  if (totalPickers < 2) return null;
+  const entries = Object.entries(counts).sort((a, b) => b[1] - a[1]);
+  if (entries.length > 1 && entries[0][1] === entries[1][1]) return null; // empate, sin mayoría clara
+  return { res: entries[0][0], count: entries[0][1], totalPickers };
+}
+
 // ─── Render: Comparar ────────────────────────────────────────────────────────
 function renderComparar() {
   const container = document.getElementById('comparar-list');
@@ -873,6 +1012,34 @@ function renderComparar() {
 
   const me = state.currentUser;
   let html = rankingHtml();
+
+  // ── KPI: qué tan "de la manada" o "contrarian" van mis pronósticos ──
+  if (me) {
+    let coincide = 0, comparable = 0, contrarian = 0;
+    state.matches.forEach(m => {
+      const myPick = state.picks[me.id]?.[m.id];
+      if (!pickSet(myPick)) return;
+      const consensus = getGroupConsensus(m.id);
+      if (!consensus) return;
+      comparable++;
+      const myNp = normPick(myPick);
+      const myRes = +myNp.home > +myNp.away ? 'H' : +myNp.home < +myNp.away ? 'A' : 'D';
+      if (myRes === consensus.res) coincide++; else contrarian++;
+    });
+    const pct = comparable > 0 ? Math.round(coincide / comparable * 100) : null;
+    html += `<div class="stat-grid" style="margin-bottom:1rem">
+      <div class="stat-card">
+        <div class="stat-label">🐑 Coincidencia con el grupo</div>
+        <div class="stat-value" style="font-size:20px">${pct !== null ? pct + '%' : '—'}</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${comparable > 0 ? `${coincide} de ${comparable} partidos comparables` : 'aún no hay suficientes pronósticos para comparar'}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">🎲 Picks contrarian</div>
+        <div class="stat-value" style="font-size:20px">${comparable > 0 ? contrarian : '—'}</div>
+        <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">le fuiste en contra al grupo</div>
+      </div>
+    </div>`;
+  }
 
   // Agrupar por fase
   const phases = [...new Set(matches.map(m => m.phase))];
@@ -902,6 +1069,16 @@ function renderComparar() {
       const myPick = me ? (state.picks[me.id]?.[m.id] || null) : null;
       const myNp   = myPick ? normPick(myPick) : null;
       const myPts  = me && hasResult && (finished || live) ? calcPoints(me.id, m, { includeLive: true }) : null;
+
+      // ¿Le fui en contra al consenso del grupo en este partido?
+      let isContrarian = false;
+      if (me && pickSet(myPick)) {
+        const consensus = getGroupConsensus(m.id);
+        if (consensus) {
+          const myRes = +myNp.home > +myNp.away ? 'H' : +myNp.home < +myNp.away ? 'A' : 'D';
+          isContrarian = myRes !== consensus.res;
+        }
+      }
 
       const resultBadge = finished
         ? `<span class="badge badge-gray">Final ${m.result.home}–${m.result.away}${hasVal(m.result.etHome) ? ` (t.e. ${m.result.etHome}–${m.result.etAway})` : ''}${penWinner(m.result) ? ` · Pen ${m.result.penHome}–${m.result.penAway}` : ''}</span>`
@@ -967,6 +1144,7 @@ function renderComparar() {
         ? `<div class="cmp-mine">
             <span class="cmp-mine-label"><i class="ti ti-user"></i> Mi pronóstico</span>
             <span class="cmp-mine-val">${myNp.home} – ${myNp.away}</span>
+            ${isContrarian ? `<span class="badge badge-purple" style="font-size:10px" title="Le fuiste en contra al consenso del grupo">🎲 contrarian</span>` : ''}
             ${myPts !== null ? `<span class="cmp-mine-pts">${myPts > 0 ? '+' + myPts + ' pts' : '+0'}</span>` : ''}
           </div>`
         : me
@@ -1029,24 +1207,7 @@ function rankingHtml() {
   return '<div class="cmp-rank"><div class="cmp-rank-head"><i class="ti ti-trophy"></i> Ranking general</div>' + rows + '</div>';
 }
 
-function renderTabla() {
-  const rankEl = document.getElementById('tabla-rank');
-  if (!rankEl) return;
-  const totalPlayed = state.matches.filter(m => m.result && m.result.home !== '').length;
-
-  rankEl.innerHTML = rankingHtml();
-
-  document.getElementById('tabla-stats').innerHTML = `
-    <div class="stat-card"><div class="stat-label">Partidos jugados</div><div class="stat-value">${totalPlayed}</div></div>
-    <div class="stat-card"><div class="stat-label">Partidos totales</div><div class="stat-value">${state.matches.length}</div></div>
-    <div class="stat-card"><div class="stat-label">Participantes</div><div class="stat-value">${state.users.length}</div></div>
-    <div class="stat-card"><div class="stat-label">Pts por exacto</div><div class="stat-value">${state.points.exact}</div></div>
-    <div class="stat-card"><div class="stat-label">Pts por ganador</div><div class="stat-value">${state.points.result}</div></div>
-    <div class="stat-card"><div class="stat-label">Bonos</div><div class="stat-value">+1 +1</div></div>
-  `;
-}
-
-// ─── Render: Stats ───────────────────────────────────────────────────────────
+// ─── Render: Tabla (ranking + estadísticas + KPIs, todo en una sola pestaña) ──
 // Empates predichos por un jugador (sobre todas sus quinielas)
 function countDraws(userId) {
   let d = 0;
@@ -1057,14 +1218,24 @@ function countDraws(userId) {
   return d;
 }
 
-function renderStats() {
-  if (!document.getElementById('stats-body')) return;
+// Diferencia de puntos entre el líder y quien va de segundo — para el KPI
+// "qué tan cerrada va la quiniela".
+function getLeaderGap(data) {
+  if (data.length < 2) return null;
+  return data[0].pts - data[1].pts;
+}
+
+function renderTabla() {
+  if (!document.getElementById('tabla-body')) return;
   const data = getTableData();
   const medals = ['🥇', '🥈', '🥉'];
 
-  // Tabla de posiciones
+  // ── Tabla unificada de posiciones (antes eran 2 tablas separadas) ──
   document.getElementById('tabla-body').innerHTML = data.map((d, i) => {
     const color = colorFor(d.user.name);
+    const total = d.played;
+    const pctHits = total > 0 ? Math.round((d.exact + d.winner) / total * 100) : 0;
+    const streak = getStreak(d.user.id);
     return `<tr>
       <td><span class="pos-num" style="background:${color}22;color:${color}">${medals[i] || i + 1}</span></td>
       <td>
@@ -1078,25 +1249,7 @@ function renderStats() {
       <td class="text-right"><span class="badge badge-success">${d.exact}</span></td>
       <td class="text-right"><span class="badge badge-purple">${d.winner}</span></td>
       <td class="text-right" style="color:var(--text-secondary)">${d.played}</td>
-    </tr>`;
-  }).join('');
-
-  // Precisión por participante
-  document.getElementById('stats-body').innerHTML = data.map(d => {
-    const total = d.played;
-    const pctExact = total > 0 ? Math.round(d.exact / total * 100) : 0;
-    const pctHits  = total > 0 ? Math.round((d.exact + d.winner) / total * 100) : 0;
-    const streak = getStreak(d.user.id);
-    const color = colorFor(d.user.name);
-    return `<tr>
-      <td>
-        <div style="display:flex;align-items:center;gap:8px">
-          <div class="avatar" style="width:26px;height:26px;font-size:10px;background:${color}30;color:${color}">${initials(d.user.name)}</div>
-          ${d.user.name}
-        </div>
-      </td>
-      <td class="text-right"><strong>${pctExact}%</strong></td>
-      <td class="text-right">${pctHits}%</td>
+      <td class="text-right">${total > 0 ? pctHits + '%' : '—'}</td>
       <td class="text-right">
         ${streak > 0
           ? `<span class="badge badge-success">🔥 ${streak}</span>`
@@ -1107,13 +1260,15 @@ function renderStats() {
     </tr>`;
   }).join('');
 
-  // Destacados (mejores) — sin sección "De la Verga"
+  // ── KPIs arriba, para no sentir que todo es tabla ──
   const arr = data.map(d => ({
+    userId: d.user.id,
     name: d.user.name.split(' ')[0],
     aciertos: d.exact + d.winner,
     draws: countDraws(d.user.id),
     played: d.played,
-    pct: d.played > 0 ? Math.round((d.exact + d.winner) / d.played * 100) : 0
+    pct: d.played > 0 ? Math.round((d.exact + d.winner) / d.played * 100) : 0,
+    streakAbs: Math.abs(getStreak(d.user.id))
   }));
   const playedArr = arr.filter(x => x.played > 0);
   const maxBy = (pool, k) => pool.length ? pool.reduce((b, x) => x[k] > b[k] ? x : b) : null;
@@ -1124,14 +1279,72 @@ function renderStats() {
       <div class="stat-value" style="font-size:20px">${w ? w.name : '—'}</div>
       <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${w ? fmt(w) : 'Aún sin datos'}</div>
     </div>`;
+
+  const totalPlayed = state.matches.filter(m => m.result && m.result.home !== '').length;
+  const leader = data[0];
+  const gap = getLeaderGap(data);
+
   const hl = document.getElementById('stats-highlights');
   if (hl) hl.innerHTML =
-      statCard('Quién acierta más', ifPos(maxBy(playedArr, 'aciertos'), 'aciertos'), w => w.aciertos + ' aciertos')
-    + statCard('Rey del empate',    ifPos(maxBy(arr, 'draws'), 'draws'),             w => w.draws + ' empates predichos')
-    + statCard('Mejor precisión',   ifPos(maxBy(playedArr, 'pct'), 'pct'),           w => w.pct + '% de aciertos');
+      (leader
+        ? `<div class="stat-card" style="border-left:3px solid ${colorFor(leader.user.name)}">
+             <div class="stat-label">🏆 Líder</div>
+             <div class="stat-value" style="font-size:20px;color:${colorFor(leader.user.name)}">${leader.user.name.split(' ')[0]}</div>
+             <div style="font-size:12px;color:var(--text-secondary);margin-top:2px">${leader.pts} pts${gap !== null ? (gap > 0 ? ` · +${gap} sobre el 2°` : ' · empatado con el 2°') : ''}</div>
+           </div>`
+        : statCard('🏆 Líder', null, () => ''))
+    + statCard('🎯 Mejor precisión',  ifPos(maxBy(playedArr, 'pct'), 'pct'),      w => w.pct + '% de aciertos')
+    + statCard('🔥 Mejor racha',       ifPos(maxBy(arr, 'streakAbs'), 'streakAbs'), w => w.streakAbs + ' seguidos')
+    + statCard('🤝 Rey del empate',    ifPos(maxBy(arr, 'draws'), 'draws'),        w => w.draws + ' empates predichos')
+    + `<div class="stat-card"><div class="stat-label">Partidos jugados</div><div class="stat-value">${totalPlayed}<span style="font-size:13px;color:var(--text-secondary)"> / ${state.matches.length}</span></div></div>`;
 }
 
 // ─── Render: Admin Matches ───────────────────────────────────────────────────
+// ─── Render: Admin — salud de datos ───────────────────────────────────────────
+// KPIs para que el admin no tenga que ir revisando partido por partido y
+// usuario por usuario a mano.
+function renderAdminHealth() {
+  const el = document.getElementById('admin-health');
+  if (!el) return;
+
+  // Partidos que ya deberían haber terminado pero no tienen resultado capturado.
+  const staleMatches = state.matches.filter(m => isFinished(m) && (!m.result || m.result.home === ''));
+
+  // Usuarios con al menos un partido aún editable (no bloqueado) sin pronóstico.
+  const editable = state.matches.filter(m => !isLocked(m));
+  const incompleteUsers = state.users.filter(u =>
+    editable.some(m => !pickSet(state.picks[u.id]?.[m.id]))
+  );
+
+  // Partidos a punto de bloquearse (menos de 3 horas) que aún tienen usuarios sin pronóstico.
+  const soonToLock = editable.filter(m => {
+    const msLeft = new Date(m.datetime).getTime() - 60 * 60 * 1000 - Date.now();
+    return msLeft > 0 && msLeft < 3 * 60 * 60 * 1000;
+  });
+
+  el.innerHTML = `
+    <div class="stat-card" style="border-left:3px solid ${staleMatches.length ? 'var(--danger-text)' : 'var(--success-text)'}">
+      <div class="stat-label">⚠️ Resultados pendientes de capturar</div>
+      <div class="stat-value" style="color:${staleMatches.length ? 'var(--danger-text)' : 'var(--success-text)'}">${staleMatches.length}</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${staleMatches.length ? 'partidos ya jugados sin marcador' : 'todo al día'}</div>
+    </div>
+    <div class="stat-card" style="border-left:3px solid ${incompleteUsers.length ? 'var(--accent)' : 'var(--success-text)'}">
+      <div class="stat-label">📝 Quinielas incompletas</div>
+      <div class="stat-value" style="color:${incompleteUsers.length ? 'var(--accent-text)' : 'var(--success-text)'}">${incompleteUsers.length}</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">${incompleteUsers.length ? incompleteUsers.map(u => u.name.split(' ')[0]).join(', ') : 'todos completos'}</div>
+    </div>
+    <div class="stat-card" style="border-left:3px solid var(--text-secondary)">
+      <div class="stat-label">⏰ Por bloquearse pronto</div>
+      <div class="stat-value">${soonToLock.length}</div>
+      <div style="font-size:11px;color:var(--text-secondary);margin-top:2px">partidos que cierran en menos de 3h</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Partidos / Participantes</div>
+      <div class="stat-value" style="font-size:20px">${state.matches.length} / ${state.users.length}</div>
+    </div>
+  `;
+}
+
 function renderAdminMatches() {
   const container = document.getElementById('admin-matches-list');
   if (state.matches.length === 0) {
@@ -1483,12 +1696,14 @@ async function syncAll() {
         : null;
       const goals1 = (of.goals1 || []).map(g => ({ name: g.name, minute: g.minute }));
       const goals2 = (of.goals2 || []).map(g => ({ name: g.name, minute: g.minute }));
+      const ground = of.ground || '';
 
       const existing = state.matches.find(m => m.home === home && m.away === away);
 
       if (existing) {
         if (existing.datetime !== datetime) { existing.datetime = datetime; timeFixed++; }
         if (existing.phase !== phase)       { existing.phase = phase;       phaseFixed++; }
+        if (ground && existing.ground !== ground) { existing.ground = ground; }
         if (result) {
           const ftChanged = existing.result?.home !== result.home || existing.result?.away !== result.away;
           const etChanged = existing.result?.etHome !== result.etHome || existing.result?.etAway !== result.etAway;
@@ -1503,7 +1718,7 @@ async function syncAll() {
       } else {
         state.matches.push({
           id: 'm' + Date.now() + Math.random().toString(36).slice(2,6),
-          home, away, datetime, phase,
+          home, away, datetime, phase, ground,
           result: result || { home: '', away: '' }
         });
         added++;
@@ -1525,7 +1740,7 @@ async function syncAll() {
     // PASO 3: Guardar y refrescar todo
     tick();
     await saveState();
-    renderAdminMatches(); renderTabla(); renderStats(); renderMatches(); renderBracket();
+    renderAdminMatches(); renderTabla(); renderMatches(); renderBracket(); renderAdminHealth();
 
     const parts = [];
     if (added > 0)        parts.push(added + ' nuevos');
@@ -1698,7 +1913,6 @@ async function confirmDeleteAll() {
   renderMyStats();
   renderMatches();
   renderTabla();
-  renderStats();
 }
 
 // ─── Cambiar PIN ─────────────────────────────────────────────────────────────
@@ -1775,6 +1989,15 @@ initFirebase().catch(err => {
   </div>`;
 });
 
+// Registra el service worker (requisito técnico de Chrome/Android para poder
+// "instalar" la app con ícono propio). Si falla (navegador viejo, http sin
+// https, etc.) la app sigue funcionando normal, solo sin esa opción.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('sw.js').catch(err => console.warn('SW no registrado:', err));
+  });
+}
+
 // Refresca el estado "en vivo" de los partidos cada minuto.
 setInterval(() => { if (state.currentUser && state.editingAs) renderMatches(); }, 60000);
 
@@ -1815,12 +2038,19 @@ const BRACKET_STRUCTURE = {
   sfPairs:  [[0,1],[2,3]],
 };
 
+// Busca el partido real (con resultado, goleadores, sede, etc.) entre dos
+// equipos, sin importar el orden local/visitante — se usa tanto para
+// resolver el bracket como para el panel de detalle al hacer clic.
+function findMatchByTeams(a, b) {
+  if (!a || !b) return null;
+  return state.matches.find(sm =>
+    (sm.home === a && sm.away === b) || (sm.home === b && sm.away === a)
+  ) || null;
+}
+
 function getWinnerOf(home, away) {
   if (!home || !away) return null;
-  const m = state.matches.find(sm =>
-    (sm.home === home && sm.away === away) ||
-    (sm.home === away && sm.away === home)
-  );
+  const m = findMatchByTeams(home, away);
   if (!m) return null;
   const rh = m.result?.home, ra = m.result?.away;
   if (rh === '' || rh == null || ra === '' || ra == null) return null;
@@ -1832,6 +2062,170 @@ function getWinnerOf(home, away) {
   const decider = matchDecider(m.result);
   if (!decider) return null; // aún sin capturar cómo se decidió el cruce
   return decider === 'H' ? m.home : m.away;
+}
+
+// ── Forma casera de un equipo, calculada 100% con datos que ya sincronizás
+// gratis desde openfootball (sin depender de ninguna API de pago). Usa todos
+// los partidos ya jugados del torneo (grupos + eliminación) para sacar un
+// promedio de puntos y diferencia de gol por partido. ──
+function computeTeamForm(team) {
+  let played = 0, gf = 0, ga = 0, pts = 0;
+  state.matches.forEach(m => {
+    if (!isFinished(m) || !m.result || m.result.home === '' || m.result.away === '') return;
+    if (m.home !== team && m.away !== team) return;
+    const rh = parseInt(m.result.home), ra = parseInt(m.result.away);
+    const isHome = m.home === team;
+    const gfT = isHome ? rh : ra, gaT = isHome ? ra : rh;
+    played++; gf += gfT; ga += gaT;
+    // En fase de grupos un empate es empate de verdad; en eliminación, si el
+    // marcador reglamentario fue empate, usamos quién avanzó de verdad
+    // (tiempo extra / penales) para que la "forma" refleje el resultado real.
+    const decider = matchDecider(m.result);
+    const rawRes = rh > ra ? 'H' : rh < ra ? 'A' : 'D';
+    const finalRes = (rawRes === 'D' && decider) ? decider : rawRes;
+    const teamRes = finalRes === 'D' ? 'D' : (finalRes === (isHome ? 'H' : 'A') ? 'W' : 'L');
+    pts += teamRes === 'W' ? 3 : teamRes === 'D' ? 1 : 0;
+  });
+  return { played, gf, ga, pts, ppg: played ? pts / played : 0, gdpg: played ? (gf - ga) / played : 0 };
+}
+
+// Probabilidad casera de ganar el cruce, a partir de la forma de cada equipo
+// en el torneo. No es un modelo profesional (para eso se necesitaría una API
+// de pago tipo API-Football, que durante el Mundial 2026 restringe ese dato
+// a planes pagos) — es una estimación razonable con datos 100% gratuitos.
+function estimateWinProbability(teamA, teamB) {
+  const a = computeTeamForm(teamA), b = computeTeamForm(teamB);
+  if (a.played === 0 && b.played === 0) return { pA: 50, pB: 50, basis: 'sin datos' };
+  const scoreA = a.ppg * 10 + a.gdpg * 3;
+  const scoreB = b.ppg * 10 + b.gdpg * 3;
+  const diff = scoreA - scoreB;
+  let pA = 1 / (1 + Math.pow(10, -diff / 8));
+  // Se acota entre 10% y 90% — con pocos partidos de muestra (grupos) sería
+  // engañoso mostrar 99%/1%.
+  pA = Math.min(0.9, Math.max(0.1, pA));
+  return { pA: Math.round(pA * 100), pB: Math.round((1 - pA) * 100), basis: `${a.played} y ${b.played} partidos jugados` };
+}
+
+// ── Panel de detalle al hacer clic en un cruce del bracket ──
+// BR_LAST guarda el último bracket calculado (niveles + estructura de 16avos)
+// para que el clic no tenga que recalcular todo desde cero.
+let BR_LAST = null;
+
+function bracketPairForNode(level, idx) {
+  if (!BR_LAST) return null;
+  if (level === 'champion') {
+    const l4 = BR_LAST.levels[4];
+    return [l4[0]?.team, l4[1]?.team];
+  }
+  if (level === 0) {
+    const s = Math.floor(idx / 2);
+    const mi = BR_LAST.order[s];
+    const m = BR_LAST.r32[mi];
+    return [m.home, m.away];
+  }
+  const prev = BR_LAST.levels[level - 1];
+  return [prev[idx * 2]?.team, prev[idx * 2 + 1]?.team];
+}
+
+function openBrMatchModal(level, idx) {
+  const pair = bracketPairForNode(level, idx);
+  if (!pair) return;
+  const [teamA, teamB] = pair;
+  const overlay = document.getElementById('modal-brmatch-overlay');
+  const title = document.getElementById('brm-title');
+  const body = document.getElementById('brm-body');
+  if (!overlay || !body) return;
+
+  if (!teamA || !teamB) {
+    title.innerHTML = 'Cruce por definir';
+    body.innerHTML = `<p style="color:var(--text-secondary);padding:1rem 0">
+      Todavía no se conocen los dos equipos de este cruce. Cuando se definan
+      ambos, aquí vas a poder ver el marcador, los goleadores y quién del
+      grupo le atinó.
+    </p>`;
+    overlay.classList.remove('hidden');
+    return;
+  }
+
+  title.innerHTML = `${flagImg(teamA, 'flag-sm')} ${teamA} <span style="color:var(--text-secondary);font-weight:400">vs</span> ${flagImg(teamB, 'flag-sm')} ${teamB}`;
+
+  const m = findMatchByTeams(teamA, teamB);
+  const hasResult = m && m.result && m.result.home !== '' && m.result.away !== '';
+
+  let html = '';
+
+  if (hasResult) {
+    const decider = matchDecider(m.result);
+    const decidedAfterDraw = parseInt(m.result.home) === parseInt(m.result.away);
+    html += `<div class="brm-score">
+      <div class="brm-team">${flagImg(m.home, 'flag-lg')}<span>${m.home}</span></div>
+      <div class="brm-result">${m.result.home}–${m.result.away}</div>
+      <div class="brm-team">${flagImg(m.away, 'flag-lg')}<span>${m.away}</span></div>
+    </div>`;
+    if (decidedAfterDraw && decider) {
+      const winnerName = decider === 'H' ? m.home : m.away;
+      const how = penWinner(m.result) ? `penales (${m.result.penHome}–${m.result.penAway})` : `tiempo extra (${m.result.etHome}–${m.result.etAway})`;
+      html += `<p class="brm-note"><i class="ti ti-flag"></i> <strong>${winnerName}</strong> avanzó por ${how}.</p>`;
+    }
+    if (m.ground) {
+      html += `<p class="brm-note"><i class="ti ti-map-pin"></i> ${m.ground}</p>`;
+    }
+    const hasGoals = (m.goals1 && m.goals1.length) || (m.goals2 && m.goals2.length);
+    if (hasGoals) {
+      const homeGoals = (m.goals1 || []).map(g => `<span class="scorer-item">${g.name} <span class="scorer-min">${g.minute}'</span></span>`).join('') || '<span class="scorer-item" style="opacity:.4">—</span>';
+      const awayGoals = (m.goals2 || []).map(g => `<span class="scorer-item">${g.name} <span class="scorer-min">${g.minute}'</span></span>`).join('') || '<span class="scorer-item" style="opacity:.4">—</span>';
+      html += `<div class="mq-scorers" style="margin-top:10px">
+        <div class="scorers-col scorers-home">${homeGoals}</div>
+        <div class="scorers-icon"><i class="ti ti-ball-football"></i></div>
+        <div class="scorers-col scorers-away">${awayGoals}</div>
+      </div>`;
+    }
+    // Quién del grupo le atinó
+    const hits = state.users.map(u => ({ user: u, pts: calcPoints(u.id, m) }))
+      .filter(x => pickSet(state.picks[x.user.id]?.[m.id]))
+      .sort((a, b) => b.pts - a.pts);
+    if (hits.length) {
+      html += `<div class="section-title" style="margin-top:14px">¿Quién le atinó?</div>
+        <div class="brm-hits">${hits.map(h => {
+          const color = colorFor(h.user.name);
+          const badge = h.pts === state.points.exact
+            ? `<span class="badge badge-success">exacto +${h.pts}</span>`
+            : h.pts > 0 ? `<span class="badge badge-purple">+${h.pts}</span>` : `<span class="badge badge-gray">+0</span>`;
+          return `<div class="brm-hit-row">
+            <div class="avatar" style="width:24px;height:24px;font-size:10px;background:${color}30;color:${color}">${initials(h.user.name)}</div>
+            <span>${h.user.name}</span>${badge}
+          </div>`;
+        }).join('')}</div>`;
+    }
+  } else {
+    // Aún no se juega: mostrar probabilidad casera basada en la forma en el torneo
+    const prob = estimateWinProbability(teamA, teamB);
+    html += `<div class="brm-score" style="margin-bottom:6px">
+      <div class="brm-team">${flagImg(teamA, 'flag-lg')}<span>${teamA}</span></div>
+      <div class="brm-result" style="font-size:14px;color:var(--text-secondary)">vs</div>
+      <div class="brm-team">${flagImg(teamB, 'flag-lg')}<span>${teamB}</span></div>
+    </div>
+    <div class="brm-prob">
+      <div class="brm-prob-bar">
+        <div class="brm-prob-fill" style="width:${prob.pA}%"></div>
+      </div>
+      <div class="brm-prob-labels">
+        <span>${teamA} ${prob.pA}%</span>
+        <span>${teamB} ${prob.pB}%</span>
+      </div>
+    </div>
+    <p class="brm-note" style="margin-top:10px"><i class="ti ti-info-circle"></i>
+      Estimación casera con base en ${prob.basis} en este Mundial (puntos y diferencia
+      de gol por partido) — no es una probabilidad oficial de casa de apuestas.
+    </p>`;
+  }
+
+  body.innerHTML = html;
+  overlay.classList.remove('hidden');
+}
+
+function closeBrMatchModal() {
+  document.getElementById('modal-brmatch-overlay')?.classList.add('hidden');
 }
 
 function resolveBracket() {
@@ -1882,17 +2276,35 @@ function brPos(level, idx) {
 }
 
 let brClipSeq = 0;
+// Colores de ronda: el circuito se va "calentando" hacia el dorado del centro,
+// dándole a cada anillo su propia identidad y sensación de progreso.
+const BR_LEVEL_GLOW = ['#3FD1C0', '#6E8CFF', '#C36BD9', '#F0954A', '#FFD25A'];
 // Solo dibuja un nodo cuando ya se conoce el equipo — nada de círculos
 // grises de "por definir" en los niveles todavía sin resolver.
-function brRadialFlag(team, x, y, r, out) {
+function brRadialFlag(team, x, y, r, out, appearDelay, level, idx) {
   if (!team) return '';
   const gx = x.toFixed(1), gy = y.toFixed(1);
   const code = TEAM_FLAGS[team];
+  const delayAttr = `style="animation-delay:${(appearDelay || 0).toFixed(2)}s"`;
+  // Nodos clickeables (excepto los 32 iniciales, que no tienen "partido previo"
+  // propio aparte del que ya se ve en la pestaña Mi quiniela) — clic muestra
+  // el cruce que llevó a este equipo hasta aquí, o si aún no se juega,
+  // la probabilidad casera de ganar.
+  const clickAttr = level != null ? ` class="brw-clickable" onclick="openBrMatchModal(${level},${idx})"` : '';
+  // Área de toque invisible, más grande que el círculo visual — en pantallas
+  // de celular el círculo dibujado mide unos 10-15px de diámetro, muy por
+  // debajo de los ~44px recomendados para el dedo. Este círculo transparente
+  // no cambia lo que se ve, solo agranda dónde responde el toque.
+  const hitR = (r + 16).toFixed(1);
+  const hitCircle = level != null ? `<circle r="${hitR}" fill="transparent" class="brw-hit"/>` : '';
   if (!code) {
     return `<g transform="translate(${gx},${gy})" class="brw-node">
-      <g class="brw-node-hover">
-        <circle r="${r}" class="brw-node-ring"/>
-        <text class="brw-node-q" x="0" y="1" text-anchor="middle" dominant-baseline="central">?</text>
+      <g class="brw-node-appear" ${delayAttr}>
+        <g class="brw-node-hover"${clickAttr}>
+          ${hitCircle}
+          <circle r="${r}" class="brw-node-ring"/>
+          <text class="brw-node-q" x="0" y="1" text-anchor="middle" dominant-baseline="central">?</text>
+        </g>
       </g>
       <title>${team}</title>
     </g>`;
@@ -1901,18 +2313,39 @@ function brRadialFlag(team, x, y, r, out) {
   const cid = 'brwclip' + brClipSeq;
   const d = r * 2 - 2.4;
   return `<g transform="translate(${gx},${gy})" class="brw-node${out ? ' brw-node-out' : ''}">
-    <g class="brw-node-spin">
-      <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="-360 0 0" dur="${BR_SPIN_DUR}s" repeatCount="indefinite"/>
-      <g class="brw-node-hover">
-        <clipPath id="${cid}"><circle r="${(r - 1.2).toFixed(1)}"/></clipPath>
-        <circle r="${r}" class="brw-node-ring${out ? ' brw-node-ring-out' : ''}"/>
-        <image href="https://flagcdn.com/w80/${code}.png" x="${(-d / 2).toFixed(1)}" y="${(-d * 0.72 / 2).toFixed(1)}"
-          width="${d.toFixed(1)}" height="${(d * 0.72).toFixed(1)}" clip-path="url(#${cid})"
-          preserveAspectRatio="xMidYMid slice" class="brw-flagimg"/>
+    <g class="brw-node-appear" ${delayAttr}>
+      <g class="brw-node-spin">
+        <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="-360 0 0" dur="${BR_SPIN_DUR}s" repeatCount="indefinite"/>
+        <g class="brw-node-hover"${clickAttr}>
+          ${hitCircle}
+          <clipPath id="${cid}"><circle r="${(r - 1.2).toFixed(1)}"/></clipPath>
+          <circle r="${r}" class="brw-node-ring${out ? ' brw-node-ring-out' : ''}"/>
+          <image href="https://flagcdn.com/w80/${code}.png" x="${(-d / 2).toFixed(1)}" y="${(-d * 0.72 / 2).toFixed(1)}"
+            width="${d.toFixed(1)}" height="${(d * 0.72).toFixed(1)}" clip-path="url(#${cid})"
+            preserveAspectRatio="xMidYMid slice" class="brw-flagimg"/>
+        </g>
       </g>
     </g>
-    <title>${team}</title>
+    <title>${team} · clic para ver detalle</title>
   </g>`;
+}
+
+// Estrellas de fondo, sutiles y parpadeantes — dan vida a la "noche de estadio".
+function brStarsSvg(n) {
+  let out = '';
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2;
+    const r = 40 + Math.random() * 370;
+    const x = (r * Math.cos(a)).toFixed(1);
+    const y = (r * Math.sin(a)).toFixed(1);
+    const rad = (0.5 + Math.random() * 1.1).toFixed(1);
+    const dur = (2.2 + Math.random() * 3).toFixed(1);
+    const delay = (Math.random() * 4).toFixed(1);
+    out += `<circle cx="${x}" cy="${y}" r="${rad}" fill="#fff" opacity="0.15">
+      <animate attributeName="opacity" values="0.08;0.6;0.08" dur="${dur}s" begin="${delay}s" repeatCount="indefinite"/>
+    </circle>`;
+  }
+  return out;
 }
 
 // Secuencia de luz por tramo (7s en total, siempre de afuera hacia adentro):
@@ -1924,7 +2357,7 @@ const BR_DASH_KT = "0;0.28571;0.71429;1";
 const BR_OPACITY_KT = "0;0.28571;0.33929;0.39286;0.44643;0.5;0.55357;0.60714;0.66071;0.71429;1";
 const BR_OPACITY_VALS = "0.15;1;0.55;1;0.55;1;0.55;1;0.55;1;0.15";
 
-function brRadialEdge(x1, y1, x2, y2, alive, delay) {
+function brRadialEdge(x1, y1, x2, y2, alive, delay, color) {
   const a = [x1.toFixed(1), y1.toFixed(1), x2.toFixed(1), y2.toFixed(1)];
   if (alive) {
     const len = Math.hypot(x2 - x1, y2 - y1);
@@ -1933,9 +2366,10 @@ function brRadialEdge(x1, y1, x2, y2, alive, delay) {
     const dashVals = `${lenF};0;0;${(-len).toFixed(1)}`;
     const dashAnim = `<animate attributeName="stroke-dashoffset" values="${dashVals}" keyTimes="${BR_DASH_KT}" dur="${BR_EDGE_CYCLE}s" begin="${beginAt}s" repeatCount="indefinite" calcMode="linear"/>`;
     const opacityAnim = `<animate attributeName="opacity" values="${BR_OPACITY_VALS}" keyTimes="${BR_OPACITY_KT}" dur="${BR_EDGE_CYCLE}s" begin="${beginAt}s" repeatCount="indefinite" calcMode="linear"/>`;
+    const glowColor = color || '#F0954A';
     return `<g>
       ${opacityAnim}
-      <line x1="${a[0]}" y1="${a[1]}" x2="${a[2]}" y2="${a[3]}" class="brw-edge-glow" stroke-dasharray="${lenF} ${lenF}" stroke-dashoffset="${lenF}">${dashAnim}</line>
+      <line x1="${a[0]}" y1="${a[1]}" x2="${a[2]}" y2="${a[3]}" class="brw-edge-glow" style="stroke:${glowColor}" stroke-dasharray="${lenF} ${lenF}" stroke-dashoffset="${lenF}">${dashAnim}</line>
       <line x1="${a[0]}" y1="${a[1]}" x2="${a[2]}" y2="${a[3]}" class="brw-edge-core" stroke-dasharray="${lenF} ${lenF}" stroke-dashoffset="${lenF}">${dashAnim}</line>
     </g>`;
   }
@@ -1999,13 +2433,14 @@ function buildRadialBracket() {
           x1: c.x, y1: c.y, x2: par.x, y2: par.y,
           alive: !!(c.team && par.team && c.team === par.team),
           delay: level * 1.0,
+          level,
         });
       });
     }
   }
   link(L0, L1, 0); link(L1, L2, 1); link(L2, L3, 2); link(L3, L4, 3);
   [L4[0], L4[1]].forEach(c => {
-    edges.push({ x1: c.x, y1: c.y, x2: 0, y2: 0, alive: !!(c.team && champion && c.team === champion), delay: 4 * 1.0 });
+    edges.push({ x1: c.x, y1: c.y, x2: 0, y2: 0, alive: !!(c.team && champion && c.team === champion), delay: 4 * 1.0, level: 4 });
   });
 
   return { levels: [L0, L1, L2, L3, L4], edges, champion };
@@ -2023,14 +2458,17 @@ function renderBracket() {
   if (!el || el.classList.contains('hidden')) return;
 
   const { levels, edges, champion } = buildRadialBracket();
+  // Guardamos el estado del bracket para que el panel de detalle (clic en un
+  // nodo) pueda resolver de qué partido se trata sin recalcular todo.
+  BR_LAST = { levels, order: BR_CIRCLE_ORDER, r32: BRACKET_STRUCTURE.r32 };
 
   let nodesSvg = '';
   levels.forEach((arr, lvl) => {
-    arr.forEach(n => { nodesSvg += brRadialFlag(n.team, n.x, n.y, BR_NODE_SIZE[lvl], n.out); });
+    arr.forEach((n, i) => { nodesSvg += brRadialFlag(n.team, n.x, n.y, BR_NODE_SIZE[lvl], n.out, lvl * 0.05 + i * 0.015, lvl, i); });
   });
 
   let edgesSvg = '';
-  edges.forEach(e => { edgesSvg += brRadialEdge(e.x1, e.y1, e.x2, e.y2, e.alive, e.delay); });
+  edges.forEach(e => { edgesSvg += brRadialEdge(e.x1, e.y1, e.x2, e.y2, e.alive, e.delay, BR_LEVEL_GLOW[e.level]); });
 
   const spokes = Array.from({ length: 16 }, (_, i) => {
     const a = (-90 + i * (360 / 16)) * Math.PI / 180;
@@ -2063,13 +2501,14 @@ function renderBracket() {
         <circle r="258" class="brw-ring"/>
         <circle r="190" class="brw-ring"/>
         <circle r="122" class="brw-ring"/>
+        ${brStarsSvg(16)}
         ${spokes}
         <g class="brw-rotor">
           <animateTransform attributeName="transform" type="rotate" from="0 0 0" to="360 0 0" dur="${BR_SPIN_DUR}s" repeatCount="indefinite"/>
           ${edgesSvg}
           ${nodesSvg}
         </g>
-        <g class="brw-center">
+        <g class="brw-center${champion ? ' brw-center-champ' : ''} brw-clickable" onclick="openBrMatchModal('champion',0)">
           <circle r="72" class="brw-center-glow" fill="url(#brwCenterGlow)"/>
           <circle r="40" class="brw-center-disc"/>
           ${champCenter}
